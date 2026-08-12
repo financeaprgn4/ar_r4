@@ -49,3 +49,10 @@ storage/logs/
 
 # Test results
 test-results/
+
+# Private automation scripts - contain credentials
+automation/bri-frc-kln.js
+automation/bri-frc-mdn.js
+automation/bri-frc-smg.js
+automation/bri-frc-yog.js
+automation/bsi-multi.js
