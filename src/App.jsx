@@ -1,7 +1,7 @@
 // App.jsx
 import { Routes, Route } from 'react-router-dom';
 import Login from './pages/login';
-import Dashboard from './pages/Dashboard';
+import Dashboard from './pages/dashboard';
 import LPDOuts from './pages/LPDOuts';
 import LPDDetail from './pages/LPDDetail';
 import LPD_Modal from './pages/LPDModal';
@@ -20,7 +20,7 @@ import Tasks from './pages/Tasks';
 import Periode from './pages/periode';
 import Users from './pages/Users';
 import Inbox from './pages/Inbox';
-import Home from './pages/Home';
+import Home from './pages/home';
 import Merge_pdf from './pages/Merge_pdf';
 import Lpd_pdf from './pages/Lpd_pdf';
 import Sarana_toko from './pages/sarana_toko';
@@ -30,8 +30,8 @@ import Inv_Unmatch_datpr from './pages/Inv_Unmatch_datpr';
 import Inv_Unmatch_sarana from './pages/Inv_Unmatch_sarana';
 import Berkas_lpd from './pages/Berkas_lpd';
 import Modal_LPD from './pages/Modal_LPD';
-import Lpd_RAB from './pages/lpd_RAB';
-import Lpd_Sarana from './pages/Lpd_Sarana';
+import Lpd_RAB from './pages/Lpd_RAB';
+import Lpd_Sarana from './pages/LPD_Sarana';
 import Master_dat_pr from './pages/Master_dat_pr';
 import Crypto from './pages/Koin_Crypto';
 import MainLayout from './components/MainLayout';
