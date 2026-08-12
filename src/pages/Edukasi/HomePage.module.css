@@ -1,0 +1,381 @@
+.gameContainer {
+  min-width: 1200px;
+  min-height: 100vh;
+  margin: 0 auto;
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  background-image: url(/images/bg-1.png);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* =====================
+   Dekorasi Gambar
+===================== */
+.decorRoot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 600px;
+  height: 600px;
+  object-fit: contain;
+  z-index: 3;
+  pointer-events: none;
+  transform: rotate(-5deg);
+}
+
+.swingMonkey {
+  animation: smoothSwing 2s ease-in-out infinite alternate;
+  transform-origin: top center;
+  will-change: transform;
+}
+
+.decorMonkey {
+  position: absolute;
+  top: -10px;
+  left: 200px;
+  width: 350px;
+  height: 350px;
+  object-fit: contain;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.decorCartoon {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 500px;
+  transform: scaleX(1);
+  object-fit: contain;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.decorBook {
+  position: absolute;
+  top: 15%;
+  left: 70%;
+  transform: translate(-50%, -50%) scaleX(-1);
+  height: 200px;
+  object-fit: contain;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.decorAwan {
+  position: absolute;
+  top: -25px;
+  right: 0;
+  width: 1000px;
+  height: auto;
+  object-fit: contain;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.decorBuilding {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 300px;
+  height: auto;
+  object-fit: contain;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* =====================
+   Konten Tengah
+===================== */
+.homeContent {
+  z-index: 5;
+  text-align: center;
+  padding: 20px;
+}
+
+.arcTitle {
+  position: relative;
+  top: -150px;
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 4rem;
+  text-transform: uppercase;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0 auto 10px auto;
+  gap: 0.2rem;
+  color: #007bff;
+  text-shadow:
+    -6px -6px 0 #fff,
+     6px -6px 0 #fff,
+    -6px  6px 0 #fff,
+     6px  6px 0 #fff,
+     0px  0px 6px rgba(0, 0, 0, 0.3);
+}
+
+.arcLine {
+  line-height: 1;
+}
+
+/* =====================
+   Kartu Game
+===================== */
+.gameOptions {
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+  margin-bottom: 30px;
+  flex-wrap: wrap;
+}
+
+.gameCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.2s ease;
+  cursor: pointer;
+}
+
+.gameCard:hover {
+  transform: scale(1.05);
+}
+
+.gameCard img {
+  width: 400px;
+  height: 300px;
+  object-fit: contain;
+  margin-bottom: 8px;
+}
+
+.disabledCard {
+  pointer-events: none;
+}
+
+.comingSoon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60px;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+}
+
+.gameName {
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 1.4rem;
+  color: #333;
+  margin-top: -4px;
+  text-align: center;
+  text-shadow:
+    -1px -1px 0 #fff,
+     1px -1px 0 #fff,
+    -1px  1px 0 #fff,
+     1px  1px 0 #fff;
+}
+
+/* =====================
+   Dialog Pop-up
+===================== */
+.gameDialogOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: transparent;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.gameDialog {
+  width: 600px;
+  height: 450px;
+  background: url('/images/Clip Art/papan.png') center center no-repeat;
+  background-size: cover;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  justify-content: flex-start;
+  box-sizing: border-box;
+}
+
+.dialogHeader {
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.gameTitle {
+  font-size: 24px;
+  margin: 0;
+  color: #333;
+}
+
+.gameDialog h2 {
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 1.8rem;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.dialogActions {
+  position: absolute;
+  bottom: 90px;
+  right: 40px;
+  display: flex;
+  gap: 10px;
+}
+
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 30px;
+  gap: 20px;
+}
+
+.playerOptionsGroup {
+  display: flex;
+  gap: 20px;
+}
+
+.playerOption {
+  font-family: 'Luckiest Guy', cursive;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 24px;
+  font-size: 20px;
+  color: white;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 2px solid white;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.playerOption:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.playerOption input[type="radio"] {
+  transform: scale(1.5);
+  accent-color: #00c853;
+  cursor: pointer;
+}
+
+.playerOption:has(input[type="radio"]:checked) {
+  background-color: rgba(0, 200, 83, 0.2);
+  border-color: #00c853;
+}
+
+.newGameButton {
+  font-family: 'Luckiest Guy', cursive;
+  background: linear-gradient(to bottom, #00c853, #009624);
+  box-shadow: 0 4px #00695c;
+  color: white;
+  font-size: 18px;
+  padding: 14px 28px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.newGameButton:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px #004d40;
+}
+
+.circleButton {
+  width: 40px;
+  height: 40px;
+  border: 4px solid white;
+  background: transparent;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.circleButton:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  transform: scale(1.05);
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* =====================
+   Animasi
+===================== */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes smoothSwing {
+  0% {
+    transform: rotate(-5deg);
+  }
+  100% {
+    transform: rotate(5deg);
+  }
+}
+
+.floatingProfileButton {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  height: 54px;
+  padding: 0 16px 0 12px;
+  border-radius: 27px;
+  background: linear-gradient(135deg, #6c5ce7, #00cec9);
+  border: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+  z-index: 999;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.floatingProfileButton:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+
+.profileName {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -1,0 +1,119 @@
+@import url('https://fonts.googleapis.com/css2?family=Luckiest+Guy&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.custom-gradient {
+    background-image: linear-gradient(45deg, #ef4444, #3b82f6, #facc15); /* merah, biru, kuning */
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+
+  /* BACKGROUND GLOBAL (DIKUNCI) */
+  background: linear-gradient(
+    135deg,
+    #c7b9ff,
+    #d9b8ff,
+    #f5a3d8
+  );
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-size: cover;
+
+  /* FIX MOBILE SCROLL */
+  overscroll-behavior: none;
+}
+
+/* ROOT REACT */
+#root {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+@keyframes shootingStar {
+    0% {
+        transform: translate(0, 0) rotate(45deg);
+        opacity: 1;
+    }
+    100% {
+        transform: translate(300px, 600px) rotate(45deg);
+        opacity: 0;
+    }
+}
+  
+shooting-star {
+    position: absolute;
+    width: 2px;
+    height: 80px;
+    background: linear-gradient(to bottom, yellow, transparent);
+    animation: shootingStar 3s linear infinite;
+    opacity: 0;
+    transform: rotate(45deg);
+}
+  
+/* btn class for bootstrap-like buttons */
+.btn {
+  @apply py-2 px-4 rounded-md font-semibold text-white focus:outline-none focus:ring-2 focus:ring-opacity-50;
+}
+
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700;
+}
+
+.btn-success {
+  @apply bg-green-600 hover:bg-green-700;
+}
+
+.btn-info {
+  @apply bg-teal-600 hover:bg-teal-700;
+}
+
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700;
+}
+
+.btn-warning {
+  @apply bg-yellow-600 hover:bg-yellow-700;
+}
+
+.trapezium-box {
+  height: 70px;
+  width: 50%;
+  clip-path: polygon(10% 10%, 85% 10%, 100% 100%, 10% 100%);
+  display: flex;
+  align-items: left;
+  justify-content: center;
+  color: white;
+  font-weight: bold;  
+}
+
+.box-header {
+  height: 50px;
+  width: 50%;
+  clip-path: polygon(0% 0%, 100% 0%, 90% 100%, 10% 100%);
+  display: flex;
+  align-items: left;
+  justify-content: center;
+  color: white;
+  font-weight: bold;  
+}
+
+.datepicker-popper {
+    z-index: 99999 !important;
+}
+
+.react-datepicker-popper {
+    z-index: 99999 !important;
+}
+
+.react-datepicker {
+    z-index: 99999 !important;
+}
