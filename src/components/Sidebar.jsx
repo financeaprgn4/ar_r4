@@ -44,9 +44,14 @@ const Sidebar = () => {
 
   const getFotoSrc = (foto) => {
     if (!foto || foto === "null" || foto.trim() === "") {
-      return "/images/profil.jpg";
+        return `${import.meta.env.BASE_URL}images/profil.jpg`;
     }
-    return `/images/${foto}`;
+
+    if (foto.startsWith("http://") || foto.startsWith("https://")) {
+        return foto;
+    }
+
+    return `${import.meta.env.BASE_URL}images/${foto}`;
   };
 
   const handleDashboardClick = () => {
