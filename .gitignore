@@ -26,6 +26,7 @@ dist-ssr
 # Laravel
 .env
 .env.*
+!.env.production
 !.env.example
 
 # Dependencies
@@ -56,3 +57,6 @@ automation/bri-frc-mdn.js
 automation/bri-frc-smg.js
 automation/bri-frc-yog.js
 automation/bsi-multi.js
+
+# Downloaded bank statements - do not commit
+automation/statement/
