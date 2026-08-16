@@ -282,6 +282,13 @@ export default function Mutasi_harian() {
     setActiveDrawer(null);
   };
 
+  const toggleImportMutasi = () => {
+    setIsCollapsed(true);
+    setActiveDrawer(prev =>
+        prev === 'bottom' ? null : 'bottom'
+    );
+  };
+
   useEffect(() => {
     const handleKeyDown = (e) => {
         const { key, code, altKey } = e;
@@ -314,13 +321,9 @@ export default function Mutasi_harian() {
                     return;
 
                 case 'KeyU':
-                    e.preventDefault();
-
-                    setIsCollapsed(true);
-                    setActiveDrawer(prev =>
-                        prev === 'bottom' ? null : 'bottom'
-                    );
-                    return;
+                  e.preventDefault();
+                  toggleImportMutasi();
+                  return;
 
                 case 'KeyX':
                     e.preventDefault();
@@ -744,7 +747,7 @@ export default function Mutasi_harian() {
           leftElement={
             <div className="flex gap-2">
               <button
-                onClick={() => setDrawerOpen(true)}
+                onClick={toggleImportMutasi}
                 className="flex items-center gap-2 bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded"
                 title="Upload Bank Statement"
                 >
