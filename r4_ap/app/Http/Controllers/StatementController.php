@@ -5,6 +5,7 @@ use App\Http\Controllers\Controller;
 use App\Services\JournalRuleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use App\Models\Statement;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
@@ -3719,6 +3720,518 @@ class StatementController extends Controller
 
             ],500);
 
+        }
+    }
+
+    public function uploadRK(Request $request)
+    {
+        try {
+
+            // ==========================================================
+            // VALIDASI REQUEST
+            // ==========================================================
+            $request->validate([
+                'cabang' => [
+                    'required',
+                    'string',
+                    'max:100',
+                ],
+
+                'files' => [
+                    'required',
+                    'array',
+                    'min:1',
+                ],
+
+                'files.*' => [
+                    'required',
+                    'file',
+                    'mimes:pdf',
+                    'max:102400',
+                ],
+            ]);
+
+            $cabang = trim($request->cabang);
+
+            $berhasil = [];
+            $error = [];
+
+
+            // ==========================================================
+            // 1. AMBIL FOLDER DARI SETTING
+            // ==========================================================
+            $setting = DB::table('setting')
+                ->where('cabang', $cabang)
+                ->where('category', 'rk_storage')
+                ->first();
+
+            if (!$setting) {
+
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        "Setting rk_storage untuk cabang {$cabang} tidak ditemukan.",
+                    'berhasil' => [],
+                    'error' => [
+                        [
+                            'file' => '-',
+                            'message' =>
+                                "Setting rk_storage untuk cabang {$cabang} tidak ditemukan."
+                        ]
+                    ]
+                ], 422);
+            }
+
+            $storagePath = trim($setting->value);
+
+
+            // ==========================================================
+            // 2. CEK FOLDER
+            // ==========================================================
+            if (!is_dir($storagePath)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Folder storage tidak ditemukan.',
+                    'berhasil' => [],
+                    'error' => [
+                        [
+                            'message' => "Folder tidak ditemukan: {$storagePath}"
+                        ]
+                    ]
+                ], 422);
+            }
+
+            // ==========================================================
+            // 3. AMBIL PERIODE AKTIF
+            //
+            // cabang     = cabang
+            // kategori   = Mutasi
+            // status     = Aktif
+            // ==========================================================
+            $periodeAktif = DB::table('periode')
+                ->where('cabang', $cabang)
+                ->where('kategori', 'Mutasi')
+                ->where('status', 'Aktif')
+                ->first();
+
+            if (!$periodeAktif) {
+
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        "Periode aktif untuk cabang {$cabang} tidak ditemukan.",
+                    'berhasil' => [],
+                    'error' => [
+                        [
+                            'file' => '-',
+                            'message' =>
+                                "Tidak ditemukan periode Mutasi dengan status Aktif untuk cabang {$cabang}."
+                        ]
+                    ]
+                ], 422);
+            }
+
+            $periode = trim($periodeAktif->periode);
+
+
+            // ==========================================================
+            // 4. PROSES SETIAP FILE
+            // ==========================================================
+            foreach ($request->file('files') as $file) {
+
+                $originalName = $file->getClientOriginalName();
+
+                try {
+
+                    // ==================================================
+                    // 4.1 AMBIL NO REK DARI NAMA FILE
+                    //
+                    // 0372780400.pdf
+                    //        ↓
+                    // 0372780400
+                    // ==================================================
+                    $noRek = trim(
+                        pathinfo(
+                            $originalName,
+                            PATHINFO_FILENAME
+                        )
+                    );
+
+
+                    // ==================================================
+                    // 4.2 VALIDASI NAMA FILE
+                    // ==================================================
+                    if ($noRek === '') {
+
+                        $error[] = [
+                            'file' => $originalName,
+                            'message' =>
+                                'Nama file tidak valid. Format harus no_rek.pdf.'
+                        ];
+
+                        continue;
+                    }
+
+
+                    // ==================================================
+                    // 4.3 VALIDASI EXTENSION
+                    // ==================================================
+                    if (
+                        strtolower(
+                            $file->getClientOriginalExtension()
+                        ) !== 'pdf'
+                    ) {
+
+                        $error[] = [
+                            'file' => $originalName,
+                            'message' =>
+                                'File harus berformat PDF.'
+                        ];
+
+                        continue;
+                    }
+
+
+                    // ==================================================
+                    // 4.4 CARI DATA BANK
+                    //
+                    // cabang + no_rek
+                    // ==================================================
+                    $bank = DB::table('bank')
+                        ->where('cabang', $cabang)
+                        ->where('no_rek', $noRek)
+                        ->first();
+
+
+                    // ==================================================
+                    // 4.5 NO REK TIDAK DITEMUKAN
+                    // ==================================================
+                    if (!$bank) {
+
+                        $error[] = [
+                            'file' => $originalName,
+                            'no_rek' => $noRek,
+                            'message' =>
+                                "No Rek {$noRek} tidak ditemukan pada tabel bank untuk cabang {$cabang}."
+                        ];
+
+                        continue;
+                    }
+
+
+                    // ==================================================
+                    // 4.6 AMBIL DATA BANK
+                    // ==================================================
+                    $namaBank = trim($bank->bank);
+                    $jnsRek = trim($bank->jns_bank);
+
+
+                    // ==================================================
+                    // 4.7 BERSIHKAN NAMA BANK
+                    // ==================================================
+                    $namaBankFile = preg_replace(
+                        '/[\\\\\/:*?"<>|]/',
+                        '_',
+                        $namaBank
+                    );
+
+
+                    // ==================================================
+                    // 4.8 BERSIHKAN PERIODE
+                    // ==================================================
+                    $periodeFile = preg_replace(
+                        '/[\\\\\/:*?"<>|]/',
+                        '_',
+                        $periode
+                    );
+
+
+                    // ==================================================
+                    // 4.9 RENAME FILE
+                    //
+                    // nama_bank_no_rek_periode.pdf
+                    // ==================================================
+                    $newFileName =
+                        $namaBankFile .
+                        '_' .
+                        $noRek .
+                        '_' .
+                        $periodeFile .
+                        '.pdf';
+
+
+                    // ==================================================
+                    // 4.10 PATH FILE
+                    // ==================================================
+                    $destinationPath = rtrim(
+                        $storagePath,
+                        DIRECTORY_SEPARATOR
+                    );
+
+                    $destinationFile =
+                        $destinationPath .
+                        DIRECTORY_SEPARATOR .
+                        $newFileName;
+
+
+                    // ==================================================
+                    // 4.11 CEK FILE SUDAH ADA
+                    // ==================================================
+                    if (File::exists($destinationFile)) {
+
+                        $error[] = [
+                            'file' => $originalName,
+                            'no_rek' => $noRek,
+                            'message' =>
+                                "File {$newFileName} sudah ada."
+                        ];
+
+                        continue;
+                    }
+
+
+                    // ==================================================
+                    // 4.12 CEK DATA RK
+                    //
+                    // Untuk mencegah duplicate record
+                    // ==================================================
+                    $existingRK = DB::table('rk')
+                        ->where('cabang', $cabang)
+                        ->where('no_rek', $noRek)
+                        ->where('periode', $periode)
+                        ->first();
+
+                    if ($existingRK) {
+
+                        $error[] = [
+                            'file' => $originalName,
+                            'no_rek' => $noRek,
+                            'message' =>
+                                "Data rekening {$noRek} untuk periode {$periode} sudah ada di tabel rk."
+                        ];
+
+                        continue;
+                    }
+
+
+                    // ==================================================
+                    // 4.13 PINDAHKAN FILE
+                    // ==================================================
+                    $file->move(
+                        $destinationPath,
+                        $newFileName
+                    );
+
+
+                    // ==================================================
+                    // 4.14 INSERT KE TABEL RK
+                    // ==================================================
+                    try {
+
+                        DB::table('rk')->insert([
+                            'cabang' => $cabang,
+                            'nama_bank' => $namaBank,
+                            'jns_rek' => $jnsRek,
+                            'no_rek' => $noRek,
+                            'file' => $newFileName,
+                            'periode' => $periode,
+                            'path' => $storagePath,
+                        ]);
+
+                    } catch (\Throwable $dbError) {
+
+                        // ---------------------------------------------
+                        // Jika insert database gagal,
+                        // hapus kembali file yang sudah dipindahkan
+                        // ---------------------------------------------
+                        if (File::exists($destinationFile)) {
+                            File::delete($destinationFile);
+                        }
+
+                        throw $dbError;
+                    }
+
+
+                    // ==================================================
+                    // 4.15 BERHASIL
+                    // ==================================================
+                    $berhasil[] = [
+                        'file_asli' => $originalName,
+                        'no_rek' => $noRek,
+                        'nama_bank' => $namaBank,
+                        'jns_rek' => $jnsRek,
+                        'periode' => $periode,
+                        'file_baru' => $newFileName,
+                        'path' => $storagePath,
+                    ];
+
+                } catch (\Throwable $e) {
+
+                    Log::error('Upload RK File Error', [
+                        'cabang' => $cabang,
+                        'file' => $originalName,
+                        'message' => $e->getMessage(),
+                        'line' => $e->getLine(),
+                    ]);
+
+                    $error[] = [
+                        'file' => $originalName,
+                        'message' =>
+                            'Gagal memproses file: ' .
+                            $e->getMessage()
+                    ];
+
+                    continue;
+                }
+            }
+
+
+            // ==========================================================
+            // 5. RESPONSE
+            // ==========================================================
+            $totalBerhasil = count($berhasil);
+            $totalError = count($error);
+
+
+            // ==========================================================
+            // SEMUA BERHASIL
+            // ==========================================================
+            if ($totalBerhasil > 0 && $totalError === 0) {
+
+                return response()->json([
+                    'success' => true,
+                    'partial' => false,
+                    'message' =>
+                        "{$totalBerhasil} file berhasil diupload.",
+                    'berhasil' => $berhasil,
+                    'error' => [],
+                ], 200);
+            }
+
+
+            // ==========================================================
+            // SEBAGIAN BERHASIL
+            // ==========================================================
+            if ($totalBerhasil > 0 && $totalError > 0) {
+
+                return response()->json([
+                    'success' => true,
+                    'partial' => true,
+                    'message' =>
+                        "{$totalBerhasil} file berhasil, {$totalError} file gagal.",
+                    'berhasil' => $berhasil,
+                    'error' => $error,
+                ], 200);
+            }
+
+
+            // ==========================================================
+            // SEMUA GAGAL
+            // ==========================================================
+            return response()->json([
+                'success' => false,
+                'partial' => false,
+                'message' =>
+                    'Tidak ada file yang berhasil diupload.',
+                'berhasil' => [],
+                'error' => $error,
+            ], 422);
+
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Data yang dikirim tidak valid.',
+                'errors' => $e->errors(),
+            ], 422);
+
+
+        } catch (\Throwable $e) {
+
+            Log::error('Upload RK Error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' =>
+                    'Terjadi kesalahan saat proses upload.',
+            ], 500);
+        }
+    }
+
+    public function viewRK($id)
+    {
+        try {
+
+            // =====================================================
+            // Ambil data RK
+            // =====================================================
+            $rk = DB::table('rk')
+                ->where('id', $id)
+                ->first();
+
+            if (!$rk) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data RK tidak ditemukan.'
+                ], 404);
+            }
+
+
+            // =====================================================
+            // Path dari database
+            // =====================================================
+            $path = trim($rk->path);
+
+
+            // =====================================================
+            // File dari database
+            // =====================================================
+            $file = trim($rk->file);
+
+
+            // =====================================================
+            // Gabungkan path + nama file
+            // =====================================================
+            $filePath = $path . DIRECTORY_SEPARATOR . $file;
+
+
+            // =====================================================
+            // Cek file
+            // =====================================================
+            if (!file_exists($filePath)) {
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'File tidak ditemukan.',
+                    'path' => $filePath
+                ], 404);
+
+            }
+
+
+            // =====================================================
+            // Tampilkan PDF di browser
+            // =====================================================
+            return response()->file($filePath);
+
+        } catch (\Throwable $e) {
+
+            \Log::error('View RK Error', [
+                'id' => $id,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat membuka file.'
+            ], 500);
         }
     }
 }

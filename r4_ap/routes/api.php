@@ -62,6 +62,8 @@ Route::post('/mutasi/reconcile', [StatementController::class, 'reconcileSelected
 Route::post('/mutasi/unreconcile', [StatementController::class, 'unreconcileSelected']);
 Route::post('/mutasi/journal', [StatementController::class, 'journalSelected']);
 Route::post('/import-receipt', [StatementController::class, 'importReceipt']);
+Route::post('/upload-rk', [StatementController::class, 'uploadRK']);
+Route::get('/rk/file/{id}', [StatementController::class, 'viewRK']);
 Route::post('/Users-add', [UsersController::class, 'usersAdd']);
 Route::get('/lpd-detail', [LpdDetailController::class, 'detail']);
 Route::post('/update-lpd-trx', [LpdUpdateId::class, 'update_id']);
