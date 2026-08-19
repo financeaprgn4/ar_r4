@@ -625,6 +625,7 @@ export default function MutasiSearch() {
             <ReusableTable
                 data={data}
                 columns={columns}
+                pageSizeOptions={[15, 20, 50, 100, "all"]}
                 globalFilter={globalFilter}
                 setGlobalFilter={setGlobalFilter}
                 onSelectionChange={setSelectedRows}

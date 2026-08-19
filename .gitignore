@@ -60,3 +60,9 @@ automation/bsi-multi.js
 
 # Downloaded bank statements - do not commit
 automation/statement/
+
+# Cloudflare Tunnel temporary files
+tunnel-last-url.txt
+tunnel.log
+tunnel-url.tmp
+start-tunnel.bat
