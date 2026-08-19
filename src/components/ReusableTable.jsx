@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -19,9 +19,25 @@ export default function ReusableTable({
   onSelectionChange = () => {},
   rowSelection = {},
   setRowSelection = () => {},
+  pageSizeOptions = [10, 20, 50, 100, "all"],
 }) {
+  const defaultPageSize = useMemo(() => {
+    const numericOptions = pageSizeOptions
+      .filter((size) => size !== "all")
+      .map(Number)
+      .filter((size) => Number.isFinite(size) && size > 0);
+  
+    if (numericOptions.length === 0) {
+      return 10;
+    }
+  
+    return Math.min(...numericOptions);
+  }, [pageSizeOptions]);
+
   const [sorting, setSorting] = useState([]);
-  const [pageSizeValue, setPageSizeValue] = useState(10);
+  const [pageSizeValue, setPageSizeValue] = useState(
+    defaultPageSize
+  );
   const selectRef = useRef(null);
   const lastVisibleRowsRef = useRef([]);
 
@@ -35,6 +51,12 @@ export default function ReusableTable({
       rowSelection,
     },
 
+    initialState: {
+      pagination: {
+        pageSize: defaultPageSize,
+      },
+    },
+    
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     enableRowSelection: true,
@@ -60,12 +82,17 @@ export default function ReusableTable({
 
   /* ================= PAGE SIZE SYNC ================= */
   useEffect(() => {
-    setPageSizeValue(
-      table.getState().pagination.pageSize === data.length
-        ? "all"
-        : table.getState().pagination.pageSize
-    );
-  }, [table.getState().pagination.pageSize, data.length]);
+    const currentPageSize = table.getState().pagination.pageSize;
+  
+    if (currentPageSize === data.length && data.length > 0) {
+      setPageSizeValue("all");
+    } else {
+      setPageSizeValue(currentPageSize);
+    }
+  }, [
+    table.getState().pagination.pageSize,
+    data.length,
+  ]);
 
   /* ================= VISIBLE DATA CALLBACK ================= */
   useEffect(() => {
@@ -94,6 +121,7 @@ export default function ReusableTable({
           !table.getIsAllRowsSelected()
         );
       }
+      
     };
 
     document.addEventListener("keydown", handleKeyDown);
@@ -212,18 +240,33 @@ export default function ReusableTable({
           value={pageSizeValue}
           onChange={(e) => {
             const val = e.target.value;
-            const size = val === "all" ? data.length : Number(val);
-            setPageSizeValue(size);
-            table.setPageSize(size);
+
+            if (val === "all") {
+              setPageSizeValue("all");
+              table.setPageSize(data.length || 1);
+            } else {
+              const size = Number(val);
+              setPageSizeValue(size);
+              table.setPageSize(size);
+            }
           }}
           className="border px-2 py-1 rounded"
         >
-          {[10, 20, 50, 100].map((s) => (
-            <option key={s} value={s}>
-              Tampilkan {s}
-            </option>
-          ))}
-          <option value="all">Tampilkan Semua</option>
+          {pageSizeOptions.map((size) => {
+            if (size === "all") {
+              return (
+                <option key="all" value="all">
+                  Tampilkan Semua
+                </option>
+              );
+            }
+
+            return (
+              <option key={size} value={size}>
+                Tampilkan {size}
+              </option>
+            );
+          })}
         </select>
       </div>
     </div>

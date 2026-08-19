@@ -63,7 +63,7 @@ Route::post('/mutasi/unreconcile', [StatementController::class, 'unreconcileSele
 Route::post('/mutasi/journal', [StatementController::class, 'journalSelected']);
 Route::post('/import-receipt', [StatementController::class, 'importReceipt']);
 Route::post('/upload-rk', [StatementController::class, 'uploadRK']);
-Route::get('/rk/file/{id}', [StatementController::class, 'viewRK']);
+Route::delete('/bank-statement/{id}', [StatementController::class, 'deleteRK']);
 Route::post('/Users-add', [UsersController::class, 'usersAdd']);
 Route::get('/lpd-detail', [LpdDetailController::class, 'detail']);
 Route::post('/update-lpd-trx', [LpdUpdateId::class, 'update_id']);

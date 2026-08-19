@@ -4163,65 +4163,78 @@ class StatementController extends Controller
         }
     }
 
-    public function viewRK($id)
+    public function deleteRK($id)
     {
         try {
 
             // =====================================================
-            // Ambil data RK
+            // 1. Ambil data RK
             // =====================================================
             $rk = DB::table('rk')
                 ->where('id', $id)
                 ->first();
 
             if (!$rk) {
+
                 return response()->json([
                     'success' => false,
-                    'message' => 'Data RK tidak ditemukan.'
+                    'message' => 'Data rekening koran tidak ditemukan.'
                 ], 404);
             }
 
 
             // =====================================================
-            // Path dari database
+            // 2. Bentuk lokasi file
             // =====================================================
             $path = trim($rk->path);
-
-
-            // =====================================================
-            // File dari database
-            // =====================================================
             $file = trim($rk->file);
 
+            $filePath =
+                $path .
+                DIRECTORY_SEPARATOR .
+                $file;
+
 
             // =====================================================
-            // Gabungkan path + nama file
+            // 3. Hapus file fisik
             // =====================================================
-            $filePath = $path . DIRECTORY_SEPARATOR . $file;
+            $fileDeleted = false;
 
+            if (file_exists($filePath)) {
 
-            // =====================================================
-            // Cek file
-            // =====================================================
-            if (!file_exists($filePath)) {
+                if (!unlink($filePath)) {
 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'File tidak ditemukan.',
-                    'path' => $filePath
-                ], 404);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'File rekening koran gagal dihapus.'
+                    ], 500);
+                }
 
+                $fileDeleted = true;
             }
 
 
             // =====================================================
-            // Tampilkan PDF di browser
+            // 4. Hapus data dari tabel RK
             // =====================================================
-            return response()->file($filePath);
+            DB::table('rk')
+                ->where('id', $id)
+                ->delete();
+
+
+            // =====================================================
+            // 5. Response
+            // =====================================================
+            return response()->json([
+                'success' => true,
+                'message' => 'Rekening koran berhasil dihapus.',
+                'file_deleted' => $fileDeleted,
+                'id' => $id,
+            ]);
 
         } catch (\Throwable $e) {
 
-            \Log::error('View RK Error', [
+            Log::error('Delete RK Error', [
                 'id' => $id,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -4230,7 +4243,7 @@ class StatementController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Terjadi kesalahan saat membuka file.'
+                'message' => 'Terjadi kesalahan saat menghapus rekening koran.'
             ], 500);
         }
     }

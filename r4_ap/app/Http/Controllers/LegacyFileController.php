@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class LegacyFileController extends Controller
 {
@@ -56,13 +57,23 @@ class LegacyFileController extends Controller
 
     public function statement($cabang, $filename)
     {
-        $path = "C:/xampp/htdocs/AP_R4/File/mutasi/{$cabang}/{$filename}";
+        $rk = DB::table('rk')
+            ->where('cabang', $cabang)
+            ->where('file', $filename)
+            ->first();
 
-        if (!file_exists($path)) {
-            abort(404, 'File tidak ditemukan.');
+        if (!$rk) {
+            abort(404, 'Data file tidak ditemukan pada tabel RK.');
         }
 
-        return response()->download($path);
+        $path = trim($rk->path);
+        $filePath = $path . DIRECTORY_SEPARATOR . $filename;
+
+        if (!file_exists($filePath)) {
+            abort(404, 'File tidak ditemukan pada lokasi storage.');
+        }
+
+        return response()->file($filePath);
     }
     
 }

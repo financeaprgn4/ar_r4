@@ -11,9 +11,9 @@ export default function Rek_koran() {
   const [showDrawer, setDrawerOpen] = useState(false);
   const { cabang } = useCabang();
   const [data, setData] = useState([]);
-  const [fullData, setFullData] = useState([]);
-
+  const [globalFilter, setGlobalFilter] = useState("");
   const labelRef = useRef(null);
+  const searchRef = useRef(null);
   const fileInputRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
 
@@ -96,7 +96,7 @@ export default function Rek_koran() {
       const result = await res.json();
   
       setData(result);
-      setFullData(result.data);
+      
   
     } catch (err) {
       console.error(
@@ -149,27 +149,27 @@ export default function Rek_koran() {
         cell: ({ row }) => (
             <div className="flex space-x-2 justify-center">
                 {row.original.file && (
-                <button
-                    onClick={() =>
-                      window.open(
-                          fileUrl(
-                              `/rk/${row.original.cabang}/${row.original.file}?v=${Date.now()}`
-                          ),
-                          '_blank'
-                      )
-                    }
+                  <button
+                      onClick={() =>
+                        window.open(
+                            fileUrl(
+                                `/rk/${row.original.cabang}/${row.original.file}?v=${Date.now()}`
+                            ),
+                            '_blank'
+                        )
+                      }
 
-                    className="px-2 py-1 bg-blue-500 text-white rounded flex items-center space-x-1"
-                >
-                    <FaDownload className="w-5 h-5" />
-                </button>
+                      className="px-2 py-1 bg-blue-500 text-white rounded flex items-center space-x-1"
+                  >
+                      <FaDownload className="w-5 h-5" />
+                  </button>
                 )}
 
                 <button
-                // onClick={() => handleDelete(row.original)}
-                className="px-2 py-1 bg-red-500 text-white rounded flex items-center space-x-1"
+                  onClick={() => handleDelete(row.original)}
+                  className="px-2 py-1 bg-red-500 text-white rounded flex items-center space-x-1"
                 >
-                <FaTrash className="w-5 h-5" />
+                  <FaTrash className="w-5 h-5" />
                 </button>
             </div>
         ),
@@ -221,10 +221,6 @@ export default function Rek_koran() {
   
   
   const handleSubmit = async () => {
-
-    // =========================================================
-    // 1. VALIDASI FILE
-    // =========================================================
     if (!selectedFile || selectedFile.length === 0) {
   
       await Swal.fire({
@@ -237,10 +233,6 @@ export default function Rek_koran() {
       return;
     }
   
-  
-    // =========================================================
-    // 2. VALIDASI CABANG
-    // =========================================================
     if (!cabang) {
   
       await Swal.fire({
@@ -253,10 +245,6 @@ export default function Rek_koran() {
       return;
     }
   
-  
-    // =========================================================
-    // 3. VALIDASI SEMUA FILE HARUS PDF
-    // =========================================================
     const invalidFiles = selectedFile.filter((file) => {
   
       const validType =
@@ -313,10 +301,6 @@ export default function Rek_koran() {
       return;
     }
   
-  
-    // =========================================================
-    // 4. KONFIRMASI UPLOAD
-    // =========================================================
     const confirmResult = await Swal.fire({
   
       icon: "question",
@@ -354,15 +338,8 @@ export default function Rek_koran() {
       return;
     }
   
-  
-    // =========================================================
-    // 5. BUAT FORMDATA
-    // =========================================================
     const formData = new FormData();
-  
-  
     selectedFile.forEach((file) => {
-  
       formData.append(
         "files[]",
         file
@@ -370,20 +347,13 @@ export default function Rek_koran() {
   
     });
   
-  
     formData.append(
       "cabang",
       cabang
     );
   
-  
-    // =========================================================
-    // 6. POPUP LOADING
-    // =========================================================
     Swal.fire({
-  
       title: `Upload RK Cabang ${cabang}`,
-  
       html: `
         <div style="margin-top:10px">
   
@@ -446,18 +416,12 @@ export default function Rek_koran() {
   
     });
   
-  
-    // =========================================================
-    // 7. CSS SPINNER
-    // =========================================================
     if (!document.getElementById("rk-upload-style")) {
-  
       const style =
         document.createElement("style");
   
       style.id =
         "rk-upload-style";
-  
   
       style.innerHTML = `
   
@@ -507,81 +471,61 @@ export default function Rek_koran() {
     try {
   
       response = await axios.post(
-  
         "/api/upload-rk",
-  
         formData,
-  
         {
-  
           headers: {
             "Content-Type":
               "multipart/form-data",
           },
   
-  
-          // ===================================================
-          // PROGRESS UPLOAD
-          // ===================================================
           onUploadProgress: (event) => {
   
             if (!event.total) {
               return;
             }
   
-  
             const percent =
               Math.round(
                 (event.loaded * 100) /
                 event.total
               );
-  
-  
+
             const container =
               Swal.getHtmlContainer();
-  
   
             const text =
               container?.querySelector(
                 "#upload-text"
               );
   
-  
             const bar =
               container?.querySelector(
                 "#progress-bar"
               );
-  
   
             const percentText =
               container?.querySelector(
                 "#progress-percent"
               );
   
-  
             if (text) {
-  
               text.innerHTML =
                 `Mengunggah file... ${percent}%`;
   
             }
   
-  
             if (bar) {
-  
               bar.style.width =
                 `${percent}%`;
-  
             }
   
   
             if (percentText) {
-  
               percentText.innerHTML =
                 `${percent}%`;
   
             }
-  
   
             if (percent >= 100) {
   
@@ -631,10 +575,6 @@ export default function Rek_koran() {
       const responseData =
         err?.response?.data;
   
-  
-      // =======================================================
-      // MESSAGE BACKEND
-      // =======================================================
       if (responseData?.message) {
   
         message =
@@ -642,10 +582,6 @@ export default function Rek_koran() {
   
       }
   
-  
-      // =======================================================
-      // VALIDATION ERROR LARAVEL
-      // =======================================================
       if (responseData?.errors) {
   
         const validationErrors =
@@ -697,9 +633,6 @@ export default function Rek_koran() {
       }
   
   
-      // =======================================================
-      // ALERT UPLOAD GAGAL
-      // =======================================================
       await Swal.fire({
   
         icon: "error",
@@ -731,19 +664,10 @@ export default function Rek_koran() {
       Array.isArray(data.error)
         ? data.error
         : [];
-  
-  
-    // =========================================================
-    // 10. TUTUP LOADING
-    // =========================================================
+
     Swal.close();
-  
-  
-    // =========================================================
-    // 11. BANGUN HASIL UPLOAD
-    // =========================================================
+    
     let html = `
-  
       <div style="
         text-align:left;
         max-height:500px;
@@ -785,10 +709,6 @@ export default function Rek_koran() {
   
     `;
   
-  
-    // =========================================================
-    // 12. FILE BERHASIL
-    // =========================================================
     if (berhasil.length > 0) {
   
       html += `
@@ -857,11 +777,7 @@ export default function Rek_koran() {
       });
   
     }
-  
-  
-    // =========================================================
-    // 13. FILE GAGAL / SKIP
-    // =========================================================
+
     if (errors.length > 0) {
   
       html += `
@@ -915,10 +831,6 @@ export default function Rek_koran() {
   
     html += `</div>`;
   
-  
-    // =========================================================
-    // 14. TENTUKAN STATUS ALERT
-    // =========================================================
     let icon = "success";
   
     let title =
@@ -990,6 +902,157 @@ export default function Rek_koran() {
 
     setDrawerOpen(false);
     return;
+  };
+
+  const handleDelete = async (row) => {
+    // =====================================================
+    // 1. VALIDASI DATA
+    // =====================================================
+    if (!row?.id) {
+      await Swal.fire({
+        icon: "error",
+        title: "Data tidak valid",
+        text: "ID rekening koran tidak ditemukan.",
+        confirmButtonText: "OK",
+      });
+  
+      return;
+    }
+  
+    // =====================================================
+    // 2. KONFIRMASI HAPUS
+    // =====================================================
+    const confirmResult = await Swal.fire({
+      icon: "warning",
+      title: "Hapus Rekening Koran?",
+      html: `
+        <div style="text-align:left">
+          <p>Anda akan menghapus rekening koran:</p>
+  
+          <p>
+            <b>${row.file ?? "-"}</b>
+          </p>
+  
+          <p>
+            Cabang: <b>${row.cabang ?? "-"}</b>
+          </p>
+  
+          <p style="color:#dc2626; margin-top:15px;">
+            File dan data rekening koran akan dihapus.
+          </p>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Ya, Hapus",
+      cancelButtonText: "Batal",
+      reverseButtons: true,
+      confirmButtonColor: "#dc2626",
+    });
+  
+    // User memilih Batal
+    if (!confirmResult.isConfirmed) {
+      return;
+    }
+  
+    // =====================================================
+    // 3. LOADING
+    // =====================================================
+    Swal.fire({
+      title: "Menghapus...",
+      text: "Mohon tunggu, rekening koran sedang dihapus.",
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+      showConfirmButton: false,
+      didOpen: () => {
+        Swal.showLoading();
+      },
+    });
+  
+    // =====================================================
+    // 4. PROSES DELETE
+    // =====================================================
+    try {
+      const response = await axios.delete(
+        `/api/bank-statement/${row.id}`
+      );
+  
+      // ===================================================
+      // Pastikan backend menyatakan berhasil
+      // ===================================================
+      if (response.data?.success === false) {
+        throw new Error(
+          response.data?.message ||
+          "Rekening koran gagal dihapus."
+        );
+      }
+  
+      // ===================================================
+      // 5. REFRESH DATA TABEL
+      //
+      // Jika refresh gagal, JANGAN dianggap sebagai
+      // kegagalan proses DELETE.
+      // ===================================================
+      try {
+        const res = await fetch(
+          `/api/Statement?cabang=${encodeURIComponent(cabang)}`
+        );
+  
+        if (!res.ok) {
+          throw new Error(
+            `Gagal mengambil data tabel. Status: ${res.status}`
+          );
+        }
+  
+        const resultData = await res.json();
+  
+        setData(resultData);
+        setFullData(resultData?.data ?? []);
+  
+      } catch (refreshError) {
+        console.error(
+          "Data berhasil dihapus, tetapi gagal refresh tabel:",
+          refreshError
+        );
+  
+        // Tidak menampilkan Swal error di sini.
+        // Karena DELETE sudah berhasil.
+      }
+  
+      // ===================================================
+      // 6. SATU-SATUNYA ALERT SUKSES
+      // ===================================================
+      await Swal.fire({
+        icon: "success",
+        title: "Berhasil",
+        text:
+          response.data?.message ||
+          "Rekening koran berhasil dihapus.",
+        confirmButtonText: "OK",
+      });
+  
+    } catch (error) {
+  
+      // ===================================================
+      // 7. ERROR DELETE
+      // ===================================================
+      console.error("Delete RK error:", error);
+  
+      const message =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        "Terjadi kesalahan saat menghapus rekening koran.";
+  
+      // ===================================================
+      // 8. SATU-SATUNYA ALERT GAGAL
+      // ===================================================
+      await Swal.fire({
+        icon: "error",
+        title: "Hapus Gagal",
+        text: message,
+        confirmButtonText: "OK",
+      });
+    }
   };
 
   return (
@@ -1095,6 +1158,10 @@ export default function Rek_koran() {
         <ReusableTable
             data={data}
             columns={columns}
+            globalFilter={globalFilter}
+            setGlobalFilter={setGlobalFilter}
+            searchInputRef={searchRef}
+            pageSizeOptions={[15, 20, 50, 100, "all"]}
             rightElement={
                 <button
                     onClick={() => setDrawerOpen(true)}

@@ -34,6 +34,7 @@ import { InboxIcon, MailIcon, SettingsIcon, PencilIcon } from "lucide-react";
 const Sidebar = () => {
   const [openMenus, setOpenMenus] = useState({ lpd: false });
   const [username, setUsername] = useState("");
+  const [levelUser, setLevelUser] = useState("");
   const {cabang, changeCabang} = useCabang();
   const [foto, setFoto] = useState("");
   const navigate = useNavigate();
@@ -127,39 +128,52 @@ const Sidebar = () => {
   useEffect(() => {
     const storedUser = sessionStorage.getItem("username");
     const storedFoto = sessionStorage.getItem("foto");
+    const storedLevel = sessionStorage.getItem("level_user");
 
     setUsername(storedUser || "User");
     setFoto(storedFoto || "");
+    setLevelUser(storedLevel || "");
   }, []);
 
   const [listCabang, setListCabang] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
 
   const handleToggleDropdown = async () => {
-
+    if (levelUser !== "Admin") {
+      return;
+    }
+  
     const nextState = !showDropdown;
-
+  
     if (nextState) {
-
+  
       setSelectedIndex(0);
-
+  
       try {
-
+  
         const res = await fetch("/api/cabang");
+  
+        if (!res.ok) {
+          throw new Error(
+            `HTTP error! status: ${res.status}`
+          );
+        }
+  
         const data = await res.json();
-
+  
         setListCabang(data);
-
+  
       } catch (err) {
-
+  
         console.error(
           "Gagal ambil cabang:",
           err
         );
-
+  
+        return;
       }
     }
-
+  
     setShowDropdown(nextState);
   };
 
@@ -187,11 +201,6 @@ const Sidebar = () => {
     const handleKeyDown = (e) => {
       if (isCollapsed) return;
 
-      /*
-      |--------------------------------------------------------------------------
-      | ALT + S -> Ganti Cabang
-      |--------------------------------------------------------------------------
-      */
       if (
         e.altKey &&
         e.key.toLowerCase() === "s"
@@ -693,10 +702,19 @@ const Sidebar = () => {
               <button
                 ref={cabangButtonRef}
                 onClick={handleToggleDropdown}
-                className="flex items-center gap-2 bg-white text-gray-700 px-3 py-1 rounded-lg shadow hover:bg-gray-100 transition"
+                className={`flex items-center gap-2 px-3 py-1 rounded-lg shadow transition ${
+                  levelUser === "Admin"
+                    ? "bg-white text-gray-700 hover:bg-gray-100 cursor-pointer"
+                    : "bg-white text-gray-700 cursor-default"
+                }`}
               >
-                <span className="text-sm font-semibold">{cabang}</span>
-                <PencilIcon className="text-xs" />
+                <span className="text-sm font-semibold">
+                  {cabang}
+                </span>
+
+                {levelUser === "Admin" && (
+                  <PencilIcon className="text-xs" />
+                )}
               </button>
 
               {/* Dropdown */}

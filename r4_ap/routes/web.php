@@ -6,6 +6,7 @@ use App\Http\Controllers\LegacyFileController;
 use App\Http\Controllers\ReportController;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Http\Controllers\LaporanLPDController;
+use App\Http\Controllers\StatementController;
 
 Route::get('/file/{folder}/{filename}', [LegacyFileController::class, 'showFile']);
 Route::get('/rk/{cabang}/{filename}', [LegacyFileController::class, 'statement']);
