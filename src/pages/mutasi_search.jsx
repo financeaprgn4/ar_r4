@@ -8,10 +8,13 @@ import { useCabang } from "../contexts/CabangContext";
 import { formatDate, formatRupiah, formatDateForApi } from "../utility/textFormatter";
 
 import {
-  MagnifyingGlassIcon,
-  ArrowPathIcon,
-  CalendarDaysIcon,
+    MagnifyingGlassIcon,
+    ArrowPathIcon,
+    CalendarDaysIcon,
+    ArrowDownTrayIcon,
 } from "@heroicons/react/24/outline";
+
+import * as XLSX from "xlsx";
 
 export default function MutasiSearch() {
   const { cabang } = useCabang();
@@ -38,6 +41,51 @@ export default function MutasiSearch() {
 
   const [selectedAction, setSelectedAction] = useState("");
   const [rowSelection, setRowSelection] = useState({});
+
+  // ==========================================================
+  // RESET SAAT CABANG BERUBAH
+  // ==========================================================
+
+  const resetOnCabangChange = () => {
+
+    // Reset filter utama
+    setFilter({
+    bank: "",
+    noRek: "ALL",
+    });
+
+    // Reset daftar rekening
+    setRekeningList([]);
+
+    // Reset tanggal
+    setTglAwal(null);
+    setTglAkhir(null);
+
+    // Reset filter tambahan
+    setSearchType("");
+
+    // Reset hasil pencarian
+    setData([]);
+
+    // Reset pencarian tabel
+    setGlobalFilter("");
+
+    // Reset selection
+    setSelectedRows([]);
+    setRowSelection({});
+
+    // Reset action
+    setSelectedAction("");
+
+    // Reset state processing/loading
+    setProcessing(false);
+  };
+
+  useEffect(() => {
+
+    resetOnCabangChange();
+
+  }, [cabang]);
 
   // ================= LOAD REKENING =================
   const loadRekening = async (jenisBank) => {
@@ -112,6 +160,278 @@ export default function MutasiSearch() {
         await loadData();
     } finally {
         setLoading(false);
+    }
+  };
+
+  // ==========================================================
+// EXPORT DATA
+// ==========================================================
+
+const handleExport = (format) => {
+
+    // --------------------------------------------------------
+    // Cek data
+    // --------------------------------------------------------
+  
+    if (!data || data.length === 0) {
+  
+      Swal.fire({
+        icon: "warning",
+        title: "Tidak ada data",
+        text: "Tidak ada data mutasi yang dapat diekspor.",
+        confirmButtonColor: "#2563eb",
+      });
+  
+      return;
+    }
+  
+  
+    try {
+  
+      // ------------------------------------------------------
+      // Mapping data
+      // ------------------------------------------------------
+      //
+      // Kita TIDAK langsung export data mentah.
+      //
+      // Tujuannya agar nama kolom dan isi file mengikuti
+      // tampilan tabel.
+      //
+      // ------------------------------------------------------
+  
+      const exportData = data.map((item, index) => {
+  
+        const noRek =
+          item.site && item.site !== "REG"
+            ? `${item.no_rek} - ${item.site}`
+            : item.no_rek;
+  
+  
+        const keterangan = [
+          item.remark || "",
+          item.remark1 || "",
+        ]
+          .filter(Boolean)
+          .join(" | ");
+  
+  
+        return {
+          No: index + 1,
+  
+          Tanggal:
+            item.tgl
+              ? formatDate(item.tgl)
+              : "",
+  
+          "Jenis Bank":
+            item.jns_bank || "",
+  
+          "No Rekening":
+            noRek || "",
+  
+          Status:
+            item.reconciled === "Y"
+              ? "Reconciled"
+              : "Unreconciled",
+  
+          Keterangan:
+            keterangan,
+  
+          Debit:
+            Number(item.db || 0),
+  
+          Kredit:
+            Number(item.cr || 0),
+        };
+  
+      });
+  
+  
+      // ------------------------------------------------------
+      // Nama file
+      // ------------------------------------------------------
+  
+      const tanggalAwal =
+        tglAwal
+          ? formatDateForApi(tglAwal)
+          : "ALL";
+  
+  
+      const tanggalAkhir =
+        tglAkhir
+          ? formatDateForApi(tglAkhir)
+          : "ALL";
+  
+  
+      const bankName =
+        filter.bank
+          ? filter.bank.replace(
+              /[^a-zA-Z0-9]+/g,
+              "_"
+            )
+          : "ALL_BANK";
+  
+  
+      const fileName =
+        `Mutasi_${cabang}_${bankName}_${tanggalAwal}_${tanggalAkhir}`;
+  
+  
+      // ------------------------------------------------------
+      // EXPORT EXCEL
+      // ------------------------------------------------------
+  
+      if (format === "excel") {
+  
+        const worksheet =
+          XLSX.utils.json_to_sheet(
+            exportData
+          );
+  
+  
+        // ----------------------------------------------------
+        // Lebar kolom
+        // ----------------------------------------------------
+  
+        worksheet["!cols"] = [
+          { wch: 6 },   // No
+          { wch: 14 },  // Tanggal
+          { wch: 20 },  // Jenis Bank
+          { wch: 25 },  // No Rekening
+          { wch: 16 },  // Status
+          { wch: 60 },  // Keterangan
+          { wch: 20 },  // Debit
+          { wch: 20 },  // Kredit
+        ];
+  
+  
+        // ----------------------------------------------------
+        // Workbook
+        // ----------------------------------------------------
+  
+        const workbook =
+          XLSX.utils.book_new();
+  
+  
+        XLSX.utils.book_append_sheet(
+          workbook,
+          worksheet,
+          "Mutasi"
+        );
+  
+  
+        // ----------------------------------------------------
+        // Download
+        // ----------------------------------------------------
+  
+        XLSX.writeFile(
+          workbook,
+          `${fileName}.xlsx`
+        );
+  
+  
+        Swal.fire({
+          icon: "success",
+          title: "Export berhasil",
+          text:
+            `${exportData.length} data berhasil diekspor ke Excel.`,
+          timer: 1500,
+          showConfirmButton: false,
+        });
+  
+        return;
+      }
+  
+  
+      // ------------------------------------------------------
+      // EXPORT CSV
+      // ------------------------------------------------------
+  
+      if (format === "csv") {
+  
+        const worksheet =
+          XLSX.utils.json_to_sheet(
+            exportData
+          );
+  
+  
+        /*
+         * SheetJS membuat CSV dari worksheet.
+         */
+        const csv =
+          XLSX.utils.sheet_to_csv(
+            worksheet,
+            {
+              FS: ",",
+            }
+          );
+  
+  
+        /*
+         * BOM UTF-8 agar Excel Windows
+         * membaca Bahasa Indonesia dengan benar.
+         */
+        const blob =
+          new Blob(
+            ["\uFEFF" + csv],
+            {
+              type:
+                "text/csv;charset=utf-8;",
+            }
+          );
+  
+  
+        const url =
+          URL.createObjectURL(blob);
+  
+  
+        const link =
+          document.createElement("a");
+  
+  
+        link.href = url;
+  
+        link.download =
+          `${fileName}.csv`;
+  
+  
+        document.body.appendChild(link);
+  
+        link.click();
+  
+        document.body.removeChild(link);
+  
+        URL.revokeObjectURL(url);
+  
+  
+        Swal.fire({
+          icon: "success",
+          title: "Export berhasil",
+          text:
+            `${exportData.length} data berhasil diekspor ke CSV.`,
+          timer: 1500,
+          showConfirmButton: false,
+        });
+  
+        return;
+      }
+  
+    } catch (error) {
+  
+      console.error(
+        "EXPORT ERROR:",
+        error
+      );
+  
+  
+      Swal.fire({
+        icon: "error",
+        title: "Export gagal",
+        text:
+          error.message ||
+          "Terjadi kesalahan saat melakukan export.",
+        confirmButtonColor: "#2563eb",
+      });
+  
     }
   };
 
@@ -635,55 +955,195 @@ export default function MutasiSearch() {
                 rightElement={
                     <div className="flex items-center gap-2">
 
+                        {/* ==================================================
+                            EXPORT
+                        ================================================== */}
+
+                        <div className="relative">
+
                         <select
-                            value={selectedAction}
-                            onChange={(e) => setSelectedAction(e.target.value)}
-                            className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[180px]"
+                            defaultValue=""
+                            onChange={(e) => {
+
+                            const value =
+                                e.target.value;
+
+                            if (!value) {
+                                return;
+                            }
+
+                            handleExport(value);
+
+                            /*
+                            * Kembalikan select ke
+                            * placeholder.
+                            */
+                            e.target.value = "";
+
+                            }}
+
+                            disabled={
+                            loading ||
+                            data.length === 0
+                            }
+
+                            className="
+                            border
+                            border-gray-300
+
+                            rounded-lg
+
+                            px-3
+                            py-2
+
+                            text-sm
+
+                            bg-white
+
+                            min-w-[150px]
+
+                            focus:outline-none
+                            focus:ring-2
+                            focus:ring-blue-400
+
+                            disabled:bg-gray-100
+                            disabled:text-gray-400
+                            disabled:cursor-not-allowed
+                            "
                         >
+
                             <option value="">
-                                Pilih Action
+                            Export Data
                             </option>
 
-                            <option value="reconcile">
-                                Reconcile Selected
+                            <option value="excel">
+                            Export Excel
                             </option>
 
-                            <option value="unreconcile">
-                                Unreconcile Selected
+                            <option value="csv">
+                            Export CSV
                             </option>
 
-                            <option value="journal">
-                                Journal
-                            </option>
                         </select>
 
-                        <button
-                            onClick={handleAction}
-                            disabled={
-                                processing ||
-                                !selectedAction ||
-                                selectedRows.length === 0
-                            }
-                            className={`
-                                flex items-center gap-2 px-4 py-2 rounded text-white text-sm transition
-                                ${
-                                    processing
-                                        ? "bg-blue-300 cursor-wait"
-                                        : selectedAction &&
-                                        selectedRows.length > 0
-                                            ? "bg-blue-500 hover:bg-blue-600"
-                                            : "bg-gray-400 cursor-not-allowed"
-                                }
-                            `}
-                        >
-                            {processing && (
-                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            )}
+                        </div>
 
-                            {processing
-                                ? "Processing..."
-                                : "Execute"}
+
+                        {/* ==================================================
+                            ACTION
+                        ================================================== */}
+
+                        <select
+                        value={selectedAction}
+
+                        onChange={(e) =>
+                            setSelectedAction(
+                            e.target.value
+                            )
+                        }
+
+                        className="
+                            border
+                            border-gray-300
+
+                            rounded-lg
+
+                            px-3
+                            py-2
+
+                            text-sm
+
+                            min-w-[180px]
+
+                            bg-white
+
+                            focus:outline-none
+                            focus:ring-2
+                            focus:ring-blue-400
+                        "
+                        >
+
+                        <option value="">
+                            Pilih Action
+                        </option>
+
+                        <option value="reconcile">
+                            Reconcile Selected
+                        </option>
+
+                        <option value="unreconcile">
+                            Unreconcile Selected
+                        </option>
+
+                        <option value="journal">
+                            Journal
+                        </option>
+
+                        </select>
+
+
+                        {/* ==================================================
+                            EXECUTE
+                        ================================================== */}
+
+                        <button
+                        onClick={handleAction}
+
+                        disabled={
+                            processing ||
+                            !selectedAction ||
+                            selectedRows.length === 0
+                        }
+
+                        className={`
+                            flex
+                            items-center
+                            gap-2
+
+                            px-4
+                            py-2
+
+                            rounded-lg
+
+                            text-white
+                            text-sm
+
+                            transition
+
+                            ${
+                            processing
+                                ? "bg-blue-300 cursor-wait"
+                                : selectedAction &&
+                                selectedRows.length > 0
+                                    ? "bg-blue-500 hover:bg-blue-600"
+                                    : "bg-gray-400 cursor-not-allowed"
+                            }
+                        `}
+                        >
+
+                        {processing && (
+                            <div
+                            className="
+                                w-4
+                                h-4
+
+                                border-2
+                                border-white
+                                border-t-transparent
+
+                                rounded-full
+
+                                animate-spin
+                            "
+                            />
+                        )}
+
+                        {processing
+                            ? "Processing..."
+                            : "Execute"}
+
                         </button>
+
                     </div>
                 }
             />

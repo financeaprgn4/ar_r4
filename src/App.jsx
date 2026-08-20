@@ -9,6 +9,7 @@ import LPDFinal from './pages/LPDFinal';
 import LPDClearencesheet from './pages/LPDClearencesheet';
 import Bank_statement from './pages/rek_koran';
 import Bank from './pages/Bank';
+import Ftp from './pages/Ftp';
 import Receipt from './pages/receipt';
 import Saldo from './pages/Saldo';
 import Hutang_dagang from './pages/HD';
@@ -73,6 +74,7 @@ function App() {
             <Route path="/lpd-cs" element={<ProtectedRoute><LPDClearencesheet /></ProtectedRoute>} />
             <Route path="/bank_statement" element={<ProtectedRoute><Bank_statement /></ProtectedRoute>} />
             <Route path="/bank" element={<ProtectedRoute><Bank /></ProtectedRoute>} />
+            <Route path="/ftp" element={<ProtectedRoute><Ftp /></ProtectedRoute>} />
             <Route path="/Rekon_AR" element={<ProtectedRoute><Receipt /></ProtectedRoute>} />
             <Route path="/hutang_dagang" element={<ProtectedRoute><Hutang_dagang /></ProtectedRoute>} />
             <Route path="/reconciliation" element={<ProtectedRoute><Rekon_bank /></ProtectedRoute>} />

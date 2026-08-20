@@ -47,7 +47,11 @@ Route::post('/update-keterangan-rab', [LpdController::class, 'updateKeteranganRa
 Route::post('/mail-add', [MailController::class, 'mailAdd']);
 Route::get('/Mail', [MailController::class, 'mailList']);
 Route::delete('/Mail/{id}', [MailController::class, 'mailDelete']);
+
 Route::get('/periodelist', [PeriodeController::class, 'periodeList']);
+Route::post('/periode', [PeriodeController::class, 'store']);
+Route::put('/periode/{id}', [PeriodeController::class, 'update']);
+
 Route::get('/Users', [UsersController::class, 'usersList']);
 Route::get('/periode', [StatementController::class, 'getPeriode']);
 Route::get('/Statement', [StatementController::class, 'StatementList']);
@@ -156,6 +160,11 @@ Route::prefix('rekon')->group(function () {
 
 Route::get('/gl', [FTPController::class, 'listFile']);
 Route::post('/gl/import', [FTPController::class, 'GLimport']);
+Route::get('/ftp', [FTPController::class, 'index']);
+Route::post('/ftp', [FTPController::class, 'store']);
+Route::put('/ftp/{id}', [FTPController::class, 'update']);
+Route::delete('/ftp/{id}', [FTPController::class, 'destroy']);
+Route::get('/ftp/{id}/test', [FTPController::class, 'testConnection']);
 
 Route::get('/crypto/binance/btcusdt', function () {
     $response = Http::get('https://api.binance.com/api/v3/klines', [

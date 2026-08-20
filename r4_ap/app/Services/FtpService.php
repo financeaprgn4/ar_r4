@@ -31,8 +31,6 @@ class FtpService
     {
         $this->config = DB::table('ftp')
             ->where('user', $user)
-            ->whereDate('start_date', '<=', Carbon::today())
-            ->whereDate('end_date', '>=', Carbon::today())
             ->first();
 
         if (!$this->config) {

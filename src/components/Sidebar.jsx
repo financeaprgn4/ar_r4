@@ -23,6 +23,7 @@ import {
   DocumentCheckIcon,
   PuzzlePieceIcon,
   MagnifyingGlassIcon,
+  ShareIcon,
 } from "@heroicons/react/24/outline";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
@@ -378,6 +379,7 @@ const Sidebar = () => {
         { id: "users", path: "/Users" },
         { id: "periode", path: "/Periode" },
         { id: "bank", path: "/bank" },
+        { id: "ftp", path: "/ftp" },
       ],
     },
 
@@ -1161,6 +1163,18 @@ const Sidebar = () => {
                 >
                   <BuildingLibraryIcon className="h-4 w-4" />
                   {!isCollapsed && <span>Bank</span>}
+                </Link>
+                <div className="border-b border-white" />
+                <Link
+                  to="/ftp"
+                  ref={el =>
+                    menuRefs.current["ftp"] = el
+                  }
+                  className={getSubMenuClass("ftp")}
+                  title={isCollapsed ? "FTP" : ""}
+                >
+                  <ShareIcon className="h-4 w-4" />
+                  {!isCollapsed && <span>FTP</span>}
                 </Link>
                 <div className="border-b border-white" />
               </div>
