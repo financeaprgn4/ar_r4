@@ -1,0 +1,7 @@
+{
+    "require": {
+        "fruitcake/laravel-cors": "^3.0",
+        "barryvdh/laravel-dompdf": "^3.1",
+        "predis/predis": "^3.2"
+    }
+}
