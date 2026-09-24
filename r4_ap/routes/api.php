@@ -56,7 +56,7 @@ Route::get('/Users', [UsersController::class, 'usersList']);
 Route::get('/periode', [StatementController::class, 'getPeriode']);
 Route::get('/Statement', [StatementController::class, 'StatementList']);
 Route::get('/mutasi', [StatementController::class, 'getMutasi']);
-Route::delete('mutasi/{file}/{cabang}', [StatementController::class, 'deleteMutasi']);
+Route::delete('/mutasi/{file}/{cabang}', [StatementController::class, 'deleteMutasi']);
 Route::post('/import-mutasi', [StatementController::class, 'importMutasi']);
 Route::post('/import-mutasi/upload', [StatementController::class, 'upload']);
 Route::get('/import-mutasi/stream', [StatementController::class, 'stream']);
@@ -66,6 +66,7 @@ Route::post('/mutasi/reconcile', [StatementController::class, 'reconcileSelected
 Route::post('/mutasi/unreconcile', [StatementController::class, 'unreconcileSelected']);
 Route::post('/mutasi/journal', [StatementController::class, 'journalSelected']);
 Route::post('/import-receipt', [StatementController::class, 'importReceipt']);
+
 Route::post('/upload-rk', [StatementController::class, 'uploadRK']);
 Route::delete('/bank-statement/{id}', [StatementController::class, 'deleteRK']);
 Route::post('/Users-add', [UsersController::class, 'usersAdd']);
@@ -156,6 +157,13 @@ Route::prefix('rekon')->group(function () {
     Route::post('/detail', [ReconciliationController::class, 'detail']);
     Route::post('/unrec-detail', [ReconciliationController::class, 'unrecDetail']);
     Route::post('/bulk-action',[ReconciliationController::class, 'bulkAction']);
+    Route::get('/period', [ReconciliationController::class,'getActivePeriod']);
+    Route::get('/receipt', [ReconciliationController::class,'reconcileReceipt']);
+    Route::get('/receipt/export', [ReconciliationController::class,'export']);
+    Route::get('/rekening',[ReconciliationController::class, 'getRekeningRekonsiliasi']);
+    Route::get('/history/filters',[ReconciliationController::class,'getReconciliationHistoryFilters']);
+    Route::get('/history',[ ReconciliationController::class,'getReconciliationHistory']);
+    Route::post('/manual',[ReconciliationController::class,'manualReconciliation']);
 });
 
 Route::get('/gl', [FTPController::class, 'listFile']);

@@ -159,12 +159,49 @@ class StatementController extends Controller
 
             /*
             ====================================================
+            REFF
+            ====================================================
+            */
+
+            // Ambil semua reff dari detail sebelum data dihapus
+            $reffList = DB::table($tableDetail)
+                ->where('src', $file)
+                ->where('cabang', $cabang)
+                ->whereNotNull('reff')
+                ->where('reff', '<>', '')
+                ->distinct()
+                ->pluck('reff')
+                ->filter(fn($reff) => trim((string) $reff) !== '')
+                ->map(fn($reff) => trim((string) $reff))
+                ->values()
+                ->toArray();
+
+
+            /*
+            ====================================================
+            RESET REFF RECEIPT
+            ====================================================
+            */
+
+            if (!empty($reffList)) {
+
+                DB::table('receipt')
+                    ->whereIn('reff', $reffList)
+                    ->update([
+                        'reff' => null
+                    ]);
+
+            }
+
+            /*
+            ====================================================
             DETAIL
             ====================================================
             */
 
             DB::table($tableDetail)
                 ->where('src', $file)
+                ->where('cabang', $cabang)
                 ->delete();
 
             /*
@@ -175,6 +212,7 @@ class StatementController extends Controller
 
             DB::table($tableRekap)
                 ->whereIn('no_rek', $rekening)
+                ->where('cabang', $cabang)
                 ->whereBetween('tgl', [
                     $mutasi->tgl_awal,
                     $mutasi->tgl_akhir
@@ -183,6 +221,7 @@ class StatementController extends Controller
 
             DB::table($tableUnrec)
                 ->whereIn('no_rek', $rekening)
+                ->where('cabang', $cabang)
                 ->whereBetween('tgl', [
                     $mutasi->tgl_awal,
                     $mutasi->tgl_akhir
@@ -257,7 +296,10 @@ class StatementController extends Controller
         ]);
 
         $cabang = $request->cabang;
-        $folder = "C:/xampp/htdocs/AP_R4/File/mutasi/" . $cabang;
+        $folder = DB::table('setting')
+            ->where('cabang', $cabang)
+            ->where('category', 'rk_storage')
+            ->value('value');
 
         if (!file_exists($folder)) mkdir($folder, 0777, true);
 
@@ -276,6 +318,7 @@ class StatementController extends Controller
                 str_contains($upper, "(BRI)")      => "BRI",
                 str_contains($upper, "(BNI)")      => "BNI",
                 str_contains($upper, "(BSI)")      => "BSI",
+                str_contains($upper, "(BTN)")      => "BTN",
                 str_contains($upper, "(NIAGA)")    => "CIMB NIAGA",
                 str_contains($upper, "TEMP")       => "INA PERDANA",
             
@@ -337,71 +380,201 @@ class StatementController extends Controller
                     $no_rek = substr($filename, $pos1 + 1, $pos2 - $pos1 - 1);
             
                 } else {
-            
-                    // INA PERDANA
-                    $handle = fopen($file->getRealPath(), 'r');
 
+                    // =====================================================
+                    // INA PERDANA
+                    // =====================================================
+                
+                    $handle = fopen($file->getRealPath(), 'r');
+                
                     if (!$handle) {
+                
                         $errors[] = [
-                            "file" => $filename,
+                            "file"   => $filename,
                             "reason" => "File tidak dapat dibuka"
                         ];
+                
                         continue;
                     }
-
-                    // Lewati header
-                    fgetcsv($handle);
-
+                
+                    /*
+                    =====================================================
+                    HEADER
+                    =====================================================
+                    */
+                
+                    $header = fgetcsv($handle, 0, ',');
+                
+                    if ($header === false) {
+                
+                        fclose($handle);
+                
+                        $errors[] = [
+                            "file"   => $filename,
+                            "reason" => "File INA PERDANA kosong atau header tidak ditemukan."
+                        ];
+                
+                        continue;
+                    }
+                
+                    /*
+                    =====================================================
+                    CARI KOLOM NOMOR REKENING
+                    =====================================================
+                    */
+                
+                    $accountIndex = null;
+                
+                    foreach ($header as $index => $column) {
+                
+                        $column = strtoupper(
+                            trim(
+                                preg_replace('/^\xEF\xBB\xBF/', '', $column)
+                            )
+                        );
+                
+                        if (
+                            $column === "BANK ACCOUNT NUMBER" ||
+                            str_contains($column, "BANK ACCOUNT NUMBER")
+                        ) {
+                
+                            $accountIndex = $index;
+                            break;
+                        }
+                    }
+                
+                
+                    /*
+                    =====================================================
+                    FALLBACK
+                    =====================================================
+                    
+                    Jika header tidak berhasil dikenali,
+                    gunakan kolom index 2 seperti format INA
+                    =====================================================
+                    */
+                
+                    if ($accountIndex === null) {
+                        $accountIndex = 2;
+                    }
+                
+                
+                    /*
+                    =====================================================
+                    AMBIL NOMOR REKENING
+                    =====================================================
+                    */
+                
                     $no_rek = null;
                     $invalid = false;
-
-                    while (($row = fgetcsv($handle)) !== false) {
-
-                        if (!isset($row[2])) {
+                
+                    while (($row = fgetcsv($handle, 0, ',')) !== false) {
+                
+                        /*
+                        -----------------------------------------------
+                        Abaikan baris kosong
+                        -----------------------------------------------
+                        */
+                
+                        if (
+                            empty($row) ||
+                            !isset($row[$accountIndex])
+                        ) {
                             continue;
                         }
-
-                        $currentNoRek = trim($row[2]);
-
-                        // Abaikan baris kosong
+                
+                
+                        /*
+                        -----------------------------------------------
+                        Ambil nomor rekening
+                        -----------------------------------------------
+                        */
+                
+                        $currentNoRek = trim(
+                            preg_replace(
+                                '/^\xEF\xBB\xBF/',
+                                '',
+                                (string) $row[$accountIndex]
+                            )
+                        );
+                
+                
+                        /*
+                        -----------------------------------------------
+                        Abaikan rekening kosong
+                        -----------------------------------------------
+                        */
+                
                         if ($currentNoRek === '') {
                             continue;
                         }
-
+                
+                
+                        /*
+                        -----------------------------------------------
+                        Rekening pertama
+                        -----------------------------------------------
+                        */
+                
                         if ($no_rek === null) {
-
+                
                             $no_rek = $currentNoRek;
-
-                        } elseif ($currentNoRek !== $no_rek) {
-
+                
+                        }
+                
+                
+                        /*
+                        -----------------------------------------------
+                        Pastikan semua transaksi menggunakan
+                        rekening yang sama
+                        -----------------------------------------------
+                        */
+                
+                        elseif ($currentNoRek !== $no_rek) {
+                
                             $invalid = true;
                             break;
-
+                
                         }
+                
                     }
-
+                
                     fclose($handle);
-
+                
+                
+                    /*
+                    =====================================================
+                    VALIDASI REKENING TIDAK KONSISTEN
+                    =====================================================
+                    */
+                
                     if ($invalid) {
-
+                
                         $errors[] = [
                             "file"   => $filename,
                             "reason" => "Nomor rekening pada file tidak konsisten."
                         ];
-
+                
                         continue;
                     }
-
+                
+                
+                    /*
+                    =====================================================
+                    VALIDASI REKENING TIDAK DITEMUKAN
+                    =====================================================
+                    */
+                
                     if ($no_rek === null) {
-
+                
                         $errors[] = [
                             "file"   => $filename,
                             "reason" => "Nomor rekening tidak ditemukan."
                         ];
-
+                
                         continue;
                     }
-            
+                
                 }
             
             } else {
@@ -496,8 +669,17 @@ class StatementController extends Controller
             $tableRekap = $site == "REG" ? "mutasi_rekap" : "mutasi_rekap_frc";
             $tableRekapUnrec = $site == "REG" ? "mutasi_rekap_unrec" : "mutasi_rekap_unrec_frc";
             
-            if (DB::table($tableMutasi)->where('file', $filename)->exists()) {
-                $errors[] = ["file" => $filename, "reason" => "File sudah pernah diimport"];
+            if (
+                DB::table($tableMutasi)
+                    ->where('file', $filename)
+                    ->where('cabang', $cabang)
+                    ->exists()
+            ) {
+                $errors[] = [
+                    "file" => $filename,
+                    "reason" => "File sudah pernah diimport untuk cabang tersebut"
+                ];
+            
                 continue;
             }
 
@@ -507,6 +689,7 @@ class StatementController extends Controller
                 LOAD FILE
                 ==========================================================
                 */
+                $rekeningTidakTerdaftar = [];
 
                 if ($site == "FRC" && in_array($bank, [
                     "BCA",
@@ -587,7 +770,30 @@ class StatementController extends Controller
                                 break;
                             }
 
+                            if (
+                                empty($rows[$i]) ||
+                                !isset($rows[$i][0]) ||
+                                trim($rows[$i][0]) === ''
+                            ) {
+                                continue;
+                            }
+
                             $dataRows[] = $rows[$i];
+                        }
+
+                        /*
+                        ==========================================================
+                        FILE BCA REG TIDAK ADA TRANSAKSI
+                        ==========================================================
+                        */
+
+                        if (
+                            $noTransaksiDetected ||
+                            empty($dataRows)
+                        ) {
+
+                            throw new \Exception("__NO_TRANSACTION__");
+
                         }
 
                         $rekening = [];
@@ -596,7 +802,7 @@ class StatementController extends Controller
                             'tgl_awal' => $tgl_awal,
                             'tgl_akhir' => $tgl_akhir,
                             'rows' => $dataRows,
-                            'no_transaksi'=>$noTransaksiDetected
+                            'no_transaksi'=>false
                         ];
                     
                     } else {
@@ -613,9 +819,21 @@ class StatementController extends Controller
                             ->where('site','<>' ,'REG')
                             ->where('jns_bank', 'BCA Frc')
                             ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
                             ->toArray();
 
                         $rekeningValid = array_flip($rekeningValid);
+
+                        // Rekening REG yang ikut muncul di file FRC harus diabaikan.
+                        $rekeningReg = DB::table('bank')
+                            ->where('cabang', $cabang)
+                            ->where('site', 'REG')
+                            ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
+                            ->flip()
+                            ->toArray();
                             
                         // Mulai dari data transaksi
                         for ($i = 4; $i < count($rows); $i++) {
@@ -632,8 +850,14 @@ class StatementController extends Controller
                                 continue;
                             }
 
-                            // Skip jika rekening bukan Franchise
+                            // Rekening REG yang ikut muncul di file FRC diabaikan.
+                            if (isset($rekeningReg[$noRek])) {
+                                continue;
+                            }
+
+                            // Rekening yang bukan REG dan bukan FRC terdaftar dicatat sebagai error.
                             if (!isset($rekeningValid[$noRek])) {
+                                $rekeningTidakTerdaftar[$noRek] = true;
                                 continue;
                             }
                     
@@ -859,9 +1083,21 @@ class StatementController extends Controller
                             ->where('site','<>','REG')
                             ->where('jns_bank','CIMB NIAGA Frc')
                             ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
                             ->toArray();
                     
                         $rekeningValid = array_flip($rekeningValid);
+
+                        // Rekening REG yang ikut muncul di file FRC harus diabaikan.
+                        $rekeningReg = DB::table('bank')
+                            ->where('cabang', $cabang)
+                            ->where('site', 'REG')
+                            ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
+                            ->flip()
+                            ->toArray();
                     
                         $bulanMap = [
                             "JANUARY"=>"01",
@@ -901,15 +1137,21 @@ class StatementController extends Controller
                     
                                 }
                     
-                                $currentRek = $match[1];
-                    
-                                if (!isset($rekeningValid[$currentRek])) {
-                    
+                                $currentRek = trim($match[1]);
+
+                                // Account REG yang muncul di file FRC diabaikan seluruh bloknya.
+                                if (isset($rekeningReg[$currentRek])) {
                                     $currentRek = null;
                                     continue;
-                    
                                 }
-                    
+
+                                // Account yang bukan REG dan bukan FRC terdaftar dicatat sebagai error.
+                                if (!isset($rekeningValid[$currentRek])) {
+                                    $rekeningTidakTerdaftar[$currentRek] = true;
+                                    $currentRek = null;
+                                    continue;
+                                }
+
                                 $rekening[$currentRek] = [
                     
                                     'tgl_awal'=>null,
@@ -1089,9 +1331,21 @@ class StatementController extends Controller
                             ->where('site','<>','REG')
                             ->where('jns_bank','MDR Frc')
                             ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
                             ->toArray();
 
                         $rekeningValid = array_flip($rekeningValid);
+
+                        // Rekening REG yang ikut muncul di file FRC harus diabaikan.
+                        $rekeningReg = DB::table('bank')
+                            ->where('cabang', $cabang)
+                            ->where('site', 'REG')
+                            ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
+                            ->flip()
+                            ->toArray();
 
                         for ($i=1;$i<count($rows);$i++) {
 
@@ -1107,7 +1361,14 @@ class StatementController extends Controller
                                 continue;
                             }
 
+                            // Rekening REG yang ikut muncul di file FRC diabaikan.
+                            if (isset($rekeningReg[$noRek])) {
+                                continue;
+                            }
+
+                            // Rekening yang bukan REG dan bukan FRC terdaftar dicatat sebagai error.
                             if (!isset($rekeningValid[$noRek])) {
+                                $rekeningTidakTerdaftar[$noRek] = true;
                                 continue;
                             }
 
@@ -1246,9 +1507,21 @@ class StatementController extends Controller
                             ->where('site', '<>', 'REG')
                             ->where('jns_bank', 'BNI Frc')
                             ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
                             ->toArray();
 
                         $rekeningValid = array_flip($rekeningValid);
+
+                        // Rekening REG yang ikut muncul di file FRC harus diabaikan.
+                        $rekeningReg = DB::table('bank')
+                            ->where('cabang', $cabang)
+                            ->where('site', 'REG')
+                            ->pluck('no_rek')
+                            ->map(fn($rek) => trim($rek))
+                            ->filter(fn($rek) => $rek !== '')
+                            ->flip()
+                            ->toArray();
 
                         for ($i = 1; $i < count($rows); $i++) {
 
@@ -1277,7 +1550,14 @@ class StatementController extends Controller
                                 continue;
                             }
 
+                            // Rekening REG yang ikut muncul di file FRC diabaikan.
+                            if (isset($rekeningReg[$noRek])) {
+                                continue;
+                            }
+
+                            // Rekening yang bukan REG dan bukan FRC terdaftar dicatat sebagai error.
                             if (!isset($rekeningValid[$noRek])) {
+                                $rekeningTidakTerdaftar[$noRek] = true;
                                 continue;
                             }
 
@@ -1577,192 +1857,624 @@ class StatementController extends Controller
 
                 /* ==================== BSI ==================== */
                 elseif ($bank === "BSI") {
+
                     if ($site == "REG") {
+                
                         /*
                         ==========================================================
                         PARSER BSI REG
                         ==========================================================
                         */
-
-                        if (count($rows) < 2) {
-                            throw new \Exception("Format file BSI tidak valid atau kosong");
+                
+                        /*
+                        ----------------------------------------------------------
+                        FILE KOSONG / TIDAK ADA TRANSAKSI
+                        ----------------------------------------------------------
+                        */
+                
+                        if (empty($rows)) {
+                
+                            $rekening[$no_rek] = [
+                
+                                'tgl_awal'      => null,
+                                'tgl_akhir'     => null,
+                                'rows'          => [],
+                                'no_transaksi'  => true
+                
+                            ];
+                
+                        } else {
+                
+                            $dataRows = [];
+                
+                            $tglAwal = null;
+                            $tglAkhir = null;
+                
+                            for ($i = 1; $i < count($rows); $i++) {
+                
+                                $row = $rows[$i];
+                
+                                if (!isset($row[0]) || trim($row[0]) == '') {
+                                    continue;
+                                }
+                
+                                $tgl = null;
+                
+                                foreach ([
+                                    'Y-m-d H:i:s',
+                                    'Y-m-d',
+                                    'd/m/Y H:i:s',
+                                    'd/m/Y'
+                                ] as $fmt) {
+                
+                                    try {
+                
+                                        $tgl = Carbon::createFromFormat(
+                                            $fmt,
+                                            trim($row[0])
+                                        )->format('Y-m-d');
+                
+                                        break;
+                
+                                    } catch (\Exception $e) {
+                
+                                    }
+                
+                                }
+                
+                                if (!$tgl) {
+                                    continue;
+                                }
+                
+                                if ($tglAwal === null || $tgl < $tglAwal) {
+                                    $tglAwal = $tgl;
+                                }
+                
+                                if ($tglAkhir === null || $tgl > $tglAkhir) {
+                                    $tglAkhir = $tgl;
+                                }
+                
+                                $row[0] = $tgl;
+                
+                                $dataRows[] = $row;
+                            }
+                
+                            /*
+                            ------------------------------------------------------
+                            HASIL PARSING
+                            ------------------------------------------------------
+                            */
+                
+                            $rekening[$no_rek] = [
+                
+                                'tgl_awal'      => $tglAwal,
+                                'tgl_akhir'     => $tglAkhir,
+                                'rows'          => $dataRows,
+                                'no_transaksi'  => empty($dataRows)
+                
+                            ];
                         }
-
-                        $rekening = [];
-
-                        $dataRows = [];
-
-                        $tglAwal = null;
-                        $tglAkhir = null;
-
-                        for ($i = 1; $i < count($rows); $i++) {
-
-                            $row = $rows[$i];
-
-                            if (!isset($row[0]) || trim($row[0]) == '') {
-                                continue;
-                            }
-
-                            $tgl = null;
-
-                            foreach ([
-                                'Y-m-d H:i:s',
-                                'Y-m-d',
-                                'd/m/Y H:i:s',
-                                'd/m/Y'
-                            ] as $fmt) {
-
-                                try {
-
-                                    $tgl = Carbon::createFromFormat(
-                                        $fmt,
-                                        trim($row[0])
-                                    )->format('Y-m-d');
-
-                                    break;
-
-                                } catch (\Exception $e) {}
-
-                            }
-
-                            if (!$tgl) {
-                                continue;
-                            }
-
-                            if ($tglAwal === null || $tgl < $tglAwal) {
-                                $tglAwal = $tgl;
-                            }
-
-                            if ($tglAkhir === null || $tgl > $tglAkhir) {
-                                $tglAkhir = $tgl;
-                            }
-
-                            $row[0] = $tgl;
-
-                            $dataRows[] = $row;
-
-                        }
-
-                        if (empty($dataRows)) {
-                            throw new \Exception("Tidak ditemukan transaksi BSI");
-                        }
-
-                        $rekening[$no_rek] = [
-
-                            'tgl_awal'      => $tglAwal,
-                            'tgl_akhir'     => $tglAkhir,
-                            'rows'          => $dataRows,
-                            'no_transaksi'  => false
-
-                        ];
+                
                     } else {
+                
                         /*
                         ==========================================================
                         PARSER BSI FRC
                         ==========================================================
                         */
-
-                        if (count($rows) < 2) {
-                            throw new \Exception("Format file BSI Franchise tidak valid");
-                        }
-
-                        $rekening = [];
-
+                
                         /*
                         ==========================================================
-                        VALIDASI NOMOR REKENING
+                        JANGAN LANGSUNG ERROR JIKA FILE KOSONG
                         ==========================================================
                         */
-
-                        $noRekFile = null;
-
-                        if (isset($rows[1][1])) {
-
-                            preg_match('/(\d{8,20})/', $rows[1][1], $match);
-
-                            if (!empty($match[1])) {
-                                $noRekFile = $match[1];
+                
+                        if (empty($rows)) {
+                
+                            $rekening[$no_rek] = [
+                
+                                'tgl_awal'      => null,
+                                'tgl_akhir'     => null,
+                                'rows'          => [],
+                                'no_transaksi'  => true
+                
+                            ];
+                
+                        } else {
+                
+                            /*
+                            ======================================================
+                            VALIDASI NOMOR REKENING
+                            ======================================================
+                            */
+                
+                            $noRekFile = null;
+                
+                            /*
+                            ------------------------------------------------------
+                            Cari nomor rekening dari beberapa baris awal
+                            ------------------------------------------------------
+                            */
+                
+                            foreach ($rows as $index => $row) {
+                
+                                /*
+                                --------------------------------------------------
+                                Jangan terlalu jauh mencari
+                                --------------------------------------------------
+                                */
+                
+                                if ($index > 5) {
+                                    break;
+                                }
+                
+                                /*
+                                --------------------------------------------------
+                                Gabungkan seluruh kolom menjadi satu string
+                                --------------------------------------------------
+                                */
+                
+                                $rowText = implode(' ', array_map(
+                                    function ($value) {
+                                        return trim((string) $value);
+                                    },
+                                    $row
+                                ));
+                
+                                /*
+                                --------------------------------------------------
+                                Cari nomor rekening
+                                --------------------------------------------------
+                                */
+                
+                                preg_match('/(\d{8,20})/', $rowText, $match);
+                
+                                if (!empty($match[1])) {
+                
+                                    $noRekFile = $match[1];
+                
+                                    break;
+                                }
                             }
-
+                
+                            /*
+                            ======================================================
+                            VALIDASI REKENING
+                            ======================================================
+                            */
+                
+                            if ($noRekFile && $noRekFile != $no_rek) {
+                
+                                throw new \Exception(
+                                    "Nomor rekening pada file ({$noRekFile}) tidak sesuai dengan rekening master ({$no_rek})"
+                                );
+                
+                            }
+                
+                            /*
+                            ======================================================
+                            DATA TRANSAKSI
+                            ======================================================
+                            */
+                
+                            $dataRows = [];
+                
+                            $tglAwal = null;
+                            $tglAkhir = null;
+                
+                            foreach ($rows as $i => $row) {
+                
+                                /*
+                                --------------------------------------------------
+                                Skip header
+                                --------------------------------------------------
+                                */
+                
+                                if ($i == 0) {
+                                    continue;
+                                }
+                
+                                /*
+                                --------------------------------------------------
+                                Baris terlalu sedikit dianggap bukan transaksi
+                                --------------------------------------------------
+                                */
+                
+                                if (count($row) < 8) {
+                                    continue;
+                                }
+                
+                                $tgl = null;
+                
+                                /*
+                                ==================================================
+                                FORMAT TANGGAL BSI
+                                ==================================================
+                                */
+                
+                                try {
+                
+                                    $tgl = Carbon::createFromFormat(
+                                        'n/j/Y H:i',
+                                        trim($row[0])
+                                    )->format('Y-m-d');
+                
+                                } catch (\Exception $e) {
+                
+                                    try {
+                
+                                        $tgl = Carbon::createFromFormat(
+                                            'm/d/Y H:i',
+                                            trim($row[0])
+                                        )->format('Y-m-d');
+                
+                                    } catch (\Exception $e) {
+                
+                                        continue;
+                
+                                    }
+                                }
+                
+                                /*
+                                --------------------------------------------------
+                                Tanggal valid
+                                --------------------------------------------------
+                                */
+                
+                                if ($tglAwal === null || $tgl < $tglAwal) {
+                                    $tglAwal = $tgl;
+                                }
+                
+                                if ($tglAkhir === null || $tgl > $tglAkhir) {
+                                    $tglAkhir = $tgl;
+                                }
+                
+                                $row[0] = $tgl;
+                
+                                $dataRows[] = $row;
+                            }
+                
+                            /*
+                            ======================================================
+                            SIMPAN HASIL PARSING
+                            ======================================================
+                            */
+                
+                            $rekening[$no_rek] = [
+                
+                                'tgl_awal'      => $tglAwal,
+                                'tgl_akhir'     => $tglAkhir,
+                                'rows'          => $dataRows,
+                
+                                /*
+                                --------------------------------------------------
+                                Jika tidak ada transaksi valid:
+                                true = file akan di-skip
+                                --------------------------------------------------
+                                */
+                
+                                'no_transaksi'  => empty($dataRows)
+                
+                            ];
                         }
+                    }
+                }
+                
+                /* ==================== BTN ==================== */
+                elseif ($bank === "BTN") {
 
-                        if ($noRekFile && $noRekFile != $no_rek) {
+                    /*
+                    ==========================================================
+                    PARSER BTN REG
+                    ==========================================================
+                    */
 
-                            throw new \Exception(
-                                "Nomor rekening pada file ({$noRekFile}) tidak sesuai dengan rekening master ({$no_rek})"
-                            );
+                    if ($site !== "REG") {
 
-                        }
+                        throw new \Exception(
+                            "Site BTN tidak valid. BTN hanya mendukung site REG."
+                        );
+
+                    }
+
+                    /*
+                    ==========================================================
+                    VALIDASI FORMAT FILE
+                    ==========================================================
+                    */
+
+                    if (count($rows) < 5) {
+
+                        throw new \Exception(
+                            "Format file BTN tidak valid atau kosong"
+                        );
+
+                    }
+
+
+                    /*
+                    ==========================================================
+                    NOMOR REKENING
+                    ==========================================================
+                    */
+
+                    if (empty($no_rek)) {
+
+                        throw new \Exception(
+                            "Nomor rekening BTN tidak ditemukan"
+                        );
+
+                    }
+
+
+                    /*
+                    ==========================================================
+                    DATA TRANSAKSI
+                    ==========================================================
+                    */
+
+                    $dataRows = [];
+
+                    $tglAwal = null;
+
+                    $tglAkhir = null;
+
+                    $noTransaksi = false;
+
+
+                    /*
+                    ==========================================================
+                    LOOP DATA
+                    ==========================================================
+                    */
+
+                    for ($i = 0; $i < count($rows); $i++) {
+
+                        $row = $rows[$i];
 
                         /*
-                        ==========================================================
-                        DATA TRANSAKSI
-                        ==========================================================
+                        ======================================================
+                        SKIP BARIS KOSONG
+                        ======================================================
                         */
 
-                        $dataRows = [];
+                        if (empty($row)) {
+                            continue;
+                        }
 
-                        $tglAwal = null;
-                        $tglAkhir = null;
 
-                        foreach ($rows as $i => $row) {
+                        /*
+                        ======================================================
+                        CEK TOTAL
+                        ======================================================
+                        */
 
-                            if ($i == 0) {
-                                continue;
-                            }
+                        $firstColumn = strtoupper(
+                            trim(
+                                (string) (
+                                    $row[0] ?? ''
+                                )
+                            )
+                        );
 
-                            if (count($row) < 8) {
-                                continue;
-                            }
+
+                        if (
+                            str_starts_with(
+                                $firstColumn,
+                                "TOTAL PER"
+                            )
+                            ||
+                            str_starts_with(
+                                $firstColumn,
+                                "GRAND TOTAL PER"
+                            )
+                        ) {
+
+                            break;
+
+                        }
+
+
+                        /*
+                        ======================================================
+                        HANYA BARIS TRANSAKSI
+                        ======================================================
+                        */
+
+                        if (
+                            !isset($row[0]) ||
+                            !preg_match(
+                                '/^\d+$/',
+                                trim($row[0])
+                            )
+                        ) {
+
+                            continue;
+
+                        }
+
+
+                        /*
+                        ======================================================
+                        VALIDASI KOLOM
+                        ======================================================
+                        */
+
+                        if (count($row) < 10) {
+                            continue;
+                        }
+
+
+                        /*
+                        ======================================================
+                        POST DATE
+                        ======================================================
+                        */
+
+                        $rawDate = trim(
+                            (string) (
+                                $row[1] ?? ''
+                            )
+                        );
+
+
+                        if ($rawDate === '') {
+                            continue;
+                        }
+
+
+                        /*
+                        ======================================================
+                        KONVERSI TANGGAL
+                        ======================================================
+                        */
+
+                        $tgl = null;
+
+                        foreach ([
+                            'd/m/Y',
+                            'd-m-Y',
+                            'Y-m-d'
+                        ] as $format) {
 
                             try {
 
                                 $tgl = Carbon::createFromFormat(
-                                    'n/j/Y H:i',
-                                    trim($row[0])
+                                    $format,
+                                    $rawDate
                                 )->format('Y-m-d');
+
+                                break;
 
                             } catch (\Exception $e) {
 
-                                try {
-
-                                    $tgl = Carbon::createFromFormat(
-                                        'm/d/Y H:i',
-                                        trim($row[0])
-                                    )->format('Y-m-d');
-
-                                } catch (\Exception $e) {
-
-                                    continue;
-
-                                }
+                                // lanjut format berikutnya
 
                             }
-
-                            if ($tglAwal === null || $tgl < $tglAwal) {
-                                $tglAwal = $tgl;
-                            }
-
-                            if ($tglAkhir === null || $tgl > $tglAkhir) {
-                                $tglAkhir = $tgl;
-                            }
-
-                            $row[0] = $tgl;
-
-                            $dataRows[] = $row;
 
                         }
 
-                        $rekening[$no_rek] = [
 
-                            'tgl_awal'      => $tglAwal,
-                            'tgl_akhir'     => $tglAkhir,
-                            'rows'          => $dataRows,
-                            'no_transaksi'  => empty($dataRows)
+                        if (!$tgl) {
+                            continue;
+                        }
 
-                        ];
+
+                        /*
+                        ======================================================
+                        TANGGAL AWAL
+                        ======================================================
+                        */
+
+                        if (
+                            $tglAwal === null ||
+                            $tgl < $tglAwal
+                        ) {
+
+                            $tglAwal = $tgl;
+
+                        }
+
+
+                        /*
+                        ======================================================
+                        TANGGAL AKHIR
+                        ======================================================
+                        */
+
+                        if (
+                            $tglAkhir === null ||
+                            $tgl > $tglAkhir
+                        ) {
+
+                            $tglAkhir = $tgl;
+
+                        }
+
+
+                        /*
+                        ======================================================
+                        NORMALISASI TANGGAL
+                        ======================================================
+                        */
+
+                        $row[1] = $tgl;
+
+
+                        /*
+                        ======================================================
+                        SIMPAN TRANSAKSI
+                        ======================================================
+                        */
+
+                        $dataRows[] = $row;
+
+                    }
+
+
+                    /*
+                    ==========================================================
+                    TIDAK ADA TRANSAKSI
+                    ==========================================================
+                    */
+
+                    if (empty($dataRows)) {
+
+                        $noTransaksi = true;
+
+                    }
+
+
+                    /*
+                    ==========================================================
+                    SAMAKAN STRUKTUR DENGAN PARSER LAIN
+                    ==========================================================
+                    */
+
+                    $rekening = [];
+
+                    $rekening[$no_rek] = [
+
+                        'tgl_awal'      => $tglAwal,
+                        'tgl_akhir'     => $tglAkhir,
+                        'rows'          => $dataRows,
+                        'no_transaksi'  => $noTransaksi
+
+                    ];
+
+                }
+
+                /*
+                ==========================================================
+                VALIDASI REKENING MASTER
+                ==========================================================
+                */
+
+                // Validasi tambahan untuk parser single-account.
+                // Parser multi-account FRC sudah memvalidasi rekening di bloknya masing-masing.
+                if (!empty($no_rek)) {
+                    $rekeningMasterAda = DB::table('bank')
+                        ->where('cabang', $cabang)
+                        ->where('no_rek', trim($no_rek))
+                        ->exists();
+
+                    if (!$rekeningMasterAda) {
+                        $rekeningTidakTerdaftar[trim($no_rek)] = true;
                     }
                 }
+
+                if (!empty($rekeningTidakTerdaftar)) {
+
+                    $rekeningList = implode(
+                        ', ',
+                        array_keys($rekeningTidakTerdaftar)
+                    );
+
+                    throw new \Exception(
+                        "Import dibatalkan. Nomor rekening berikut belum terdaftar di tabel bank: {$rekeningList}"
+                    );
+                }
+
                 /*
                 ==========================================================
                 CEK DUPLIKASI FILE
@@ -1805,8 +2517,8 @@ class StatementController extends Controller
                             "bank"      => $bankMutasi,
                             "file"      => $filename,
                             "tgl_awal"  => $data['tgl_awal'],
-                            "tgl_akhir" => $data['tgl_akhir']
-                
+                            "tgl_akhir" => $data['tgl_akhir'],
+                            "path"      => $folder
                         ]);
                 
                     }
@@ -1823,6 +2535,7 @@ class StatementController extends Controller
                         "file"      => $filename,
                         "tgl_awal"  => $tglAwalFile,
                         "tgl_akhir" => $tglAkhirFile,
+                        "path"      => $folder
                 
                     ]);
                 
@@ -2023,6 +2736,39 @@ class StatementController extends Controller
                         
                                 break;
                         
+                            /*
+                            ==========================================================
+                            BTN REG
+                            ==========================================================
+                            */
+
+                            case "BTN_REG":
+
+                                $tgl = trim($row[1]);
+
+                                $remark = trim($row[5]);
+
+                                $saldo = (float) str_replace(
+                                    ",",
+                                    "",
+                                    trim($row[8] ?? "0")
+                                );
+
+                                $db = (float) str_replace(
+                                    ",",
+                                    "",
+                                    trim($row[6] ?? "0")
+                                );
+
+                                $cr = (float) str_replace(
+                                    ",",
+                                    "",
+                                    trim($row[7] ?? "0")
+                                );
+
+
+                                break;
+
                             /*
                             ==========================================================
                             BCA FRANCHISE
@@ -2581,6 +3327,11 @@ class StatementController extends Controller
             } 
             catch (\Throwable $e) {
 
+                // Rollback jika transaksi sedang aktif
+                if (DB::transactionLevel() > 0) {
+                    DB::rollBack();
+                }
+            
                 if ($e->getMessage() === "__NO_TRANSACTION__") {
             
                     $errors[] = [
@@ -2595,7 +3346,6 @@ class StatementController extends Controller
                     "file"   => $filename,
                     "reason" => $e->getMessage()
                 ];
-            
             }
         }
 
@@ -3305,7 +4055,6 @@ class StatementController extends Controller
         $errors = [];
 
         $insertData = [];
-
         $updateData = [];
 
         $inserted = 0;
@@ -3318,59 +4067,61 @@ class StatementController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Ambil seluruh Receipt Method yang valid untuk cabang
+            | 1. Ambil periode Mutasi aktif berdasarkan cabang
             |--------------------------------------------------------------------------
             */
 
-            $validReceiptMethod = DB::table('bank')
-                ->where('cabang', $cabang)
-                ->distinct()
-                ->pluck('receipt_method')
-                ->map(fn($v) => trim($v))
-                ->flip();
+            $activePeriod = DB::table('periode')
+                ->where('Cabang', $cabang)
+                ->where('kategori', 'Mutasi')
+                ->where('status', 'Aktif')
+                ->first();
+
+            if (!$activePeriod) {
+
+                throw new \Exception(
+                    "Periode Mutasi aktif untuk cabang {$cabang} tidak ditemukan."
+                );
+            }
+
 
             /*
             |--------------------------------------------------------------------------
-            | Ambil seluruh receipt yang pernah diimport
+            | 2. Loop setiap file
             |--------------------------------------------------------------------------
-            */
-
-            $existingReceipt = DB::table('receipt')
-                ->select(
-                    'id',
-                    'receipt_number',
-                    'receipt_status',
-                    'receipt_state'
-                )
-                ->get()
-                ->keyBy('receipt_number');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Loop File
-            |--------------------------------------------------------------------------
+            |
+            | Aturan:
+            |
+            | REG:
+            |   1 file = 1 no_rek
+            |
+            | Franchise:
+            |   1 file = 1 jns_bank
+            |
             */
 
             foreach ($request->file('files') as $file) {
+
+                $fileName = $file->getClientOriginalName();
 
                 $handle = fopen($file->getRealPath(), "r");
 
                 if (!$handle) {
 
                     $errors[] = [
-                        'file' => $file->getClientOriginalName(),
+                        'file' => $fileName,
                         'issues' => [
                             'File tidak dapat dibaca.'
                         ]
                     ];
 
                     continue;
-
                 }
+
 
                 /*
                 |--------------------------------------------------------------------------
-                | Header CSV
+                | 3. Baca Header CSV
                 |--------------------------------------------------------------------------
                 */
 
@@ -3381,20 +4132,20 @@ class StatementController extends Controller
                     fclose($handle);
 
                     $errors[] = [
-                        'file' => $file->getClientOriginalName(),
+                        'file' => $fileName,
                         'issues' => [
                             'Header CSV tidak ditemukan.'
                         ]
                     ];
 
                     continue;
-
                 }
+
 
                 $header = array_map('trim', $header);
 
-                $expectedHeader = [
 
+                $expectedHeader = [
                     'Receipt Method',
                     'Remittance Bank Account',
                     'Receipt Number',
@@ -3407,32 +4158,40 @@ class StatementController extends Controller
                     'Comments',
                     'Activity',
                     'Paid By'
-
                 ];
+
 
                 if ($header != $expectedHeader) {
 
                     fclose($handle);
 
                     $errors[] = [
-
-                        'file' => $file->getClientOriginalName(),
-
+                        'file' => $fileName,
                         'issues' => [
                             'Format Header CSV tidak sesuai.'
                         ]
-
                     ];
 
                     continue;
-
                 }
+
 
                 /*
                 |--------------------------------------------------------------------------
-                | Loop Isi CSV
+                | 4. Baca seluruh isi file terlebih dahulu
                 |--------------------------------------------------------------------------
+                |
+                | Kita perlu mengetahui:
+                |
+                | - rekening yang digunakan file
+                | - apakah REG / Franchise
+                | - jns_bank
+                |
+                | sebelum mengambil existingReceipt.
+                |
                 */
+
+                $rows = [];
 
                 $line = 1;
 
@@ -3443,7 +4202,7 @@ class StatementController extends Controller
                     if (count($row) != 12) {
 
                         $errors[] = [
-                            'file' => $file->getClientOriginalName(),
+                            'file' => $fileName,
                             'issues' => [
                                 "Baris {$line} jumlah kolom tidak sesuai."
                             ]
@@ -3452,7 +4211,394 @@ class StatementController extends Controller
                         continue;
                     }
 
-                    $receiptMethod          = trim($row[0]);
+                    $row = array_map('trim', $row);
+
+                    $rows[] = [
+                        'line' => $line,
+                        'data' => $row
+                    ];
+                }
+
+                fclose($handle);
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 5. Jika tidak ada data valid dalam file
+                |--------------------------------------------------------------------------
+                */
+
+                if (empty($rows)) {
+
+                    continue;
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 6. Ambil seluruh Remittance Bank Account dari file
+                |--------------------------------------------------------------------------
+                */
+
+                $fileAccounts = collect($rows)
+                    ->pluck('data')
+                    ->map(function ($row) {
+                        return trim($row[1]);
+                    })
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->toArray();
+
+
+                if (empty($fileAccounts)) {
+
+                    $errors[] = [
+                        'file' => $fileName,
+                        'issues' => [
+                            'Remittance Bank Account tidak ditemukan dalam file.'
+                        ]
+                    ];
+
+                    continue;
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 7. Cari data bank berdasarkan no_rek + cabang
+                |--------------------------------------------------------------------------
+                */
+
+                $bankAccounts = DB::table('bank')
+                    ->select(
+                        'no_rek',
+                        'jns_bank',
+                        'cabang'
+                    )
+                    ->where('cabang', $cabang)
+                    ->whereIn('no_rek', $fileAccounts)
+                    ->get();
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8. Pastikan semua rekening CSV terdaftar
+                |--------------------------------------------------------------------------
+                */
+
+                $bankAccountMap = $bankAccounts
+                    ->mapWithKeys(function ($bank) {
+                        return [
+                            trim($bank->no_rek) => $bank
+                        ];
+                    });
+
+
+                foreach ($fileAccounts as $account) {
+
+                    if (!$bankAccountMap->has($account)) {
+
+                        $errors[] = [
+                            'file' => $fileName,
+                            'issues' => [
+                                "Remittance Bank Account '{$account}' tidak terdaftar pada tabel bank untuk cabang {$cabang}."
+                            ]
+                        ];
+                    }
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 9. Jika ada rekening yang tidak terdaftar,
+                |    jangan proses file tersebut
+                |--------------------------------------------------------------------------
+                */
+
+                $unknownAccounts = collect($fileAccounts)
+                    ->filter(function ($account) use ($bankAccountMap) {
+                        return !$bankAccountMap->has($account);
+                    })
+                    ->values()
+                    ->toArray();
+
+
+                if (!empty($unknownAccounts)) {
+
+                    continue;
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 10. Tentukan tipe file REG / Franchise
+                |--------------------------------------------------------------------------
+                |
+                | REG:
+                |   jns_bank = REG
+                |
+                | Franchise:
+                |   jns_bank != REG
+                |
+                */
+
+                $fileBankTypes = $bankAccounts
+                    ->map(function ($bank) {
+                        return trim($bank->jns_bank);
+                    })
+                    ->unique()
+                    ->values()
+                    ->toArray();
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 11. Validasi bahwa satu file tidak mencampur REG dan Franchise
+                |--------------------------------------------------------------------------
+                */
+
+                $hasReg = $bankAccounts->contains(function ($bank) {
+                    return strcasecmp(trim($bank->jns_bank), 'REG') === 0;
+                });
+
+
+                $hasFranchise = $bankAccounts->contains(function ($bank) {
+                    return strcasecmp(trim($bank->jns_bank), 'REG') !== 0;
+                });
+
+
+                if ($hasReg && $hasFranchise) {
+
+                    $errors[] = [
+                        'file' => $fileName,
+                        'issues' => [
+                            'File mencampur rekening REG dan Franchise. Satu file hanya boleh berisi REG atau satu jenis Franchise.'
+                        ]
+                    ];
+
+                    continue;
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 12. Tentukan sourceAccounts
+                |--------------------------------------------------------------------------
+                |
+                | REG:
+                |   1 file = 1 no_rek
+                |
+                | Franchise:
+                |   1 file = 1 jns_bank
+                |   semua no_rek dalam jns_bank tersebut menjadi scope.
+                |
+                */
+
+                $sourceAccounts = [];
+
+                $sourceType = null;
+
+                $sourceJnsBank = null;
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 12A. REG
+                |--------------------------------------------------------------------------
+                */
+
+                if ($hasReg) {
+
+                    $sourceType = 'REG';
+
+
+                    /*
+                    | Semua rekening dalam file harus sama
+                    */
+
+                    if (count($fileAccounts) !== 1) {
+
+                        $errors[] = [
+                            'file' => $fileName,
+                            'issues' => [
+                                'Untuk rekening REG, satu file hanya boleh berisi satu nomor rekening.'
+                            ]
+                        ];
+
+                        continue;
+                    }
+
+
+                    $sourceAccounts = [
+                        $fileAccounts[0]
+                    ];
+
+
+                    /*
+                    | Pastikan rekening tersebut benar-benar REG
+                    */
+
+                    $bank = $bankAccountMap[$fileAccounts[0]];
+
+                    if (strcasecmp(trim($bank->jns_bank), 'REG') !== 0) {
+
+                        $errors[] = [
+                            'file' => $fileName,
+                            'issues' => [
+                                "Rekening '{$fileAccounts[0]}' bukan rekening REG."
+                            ]
+                        ];
+
+                        continue;
+                    }
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 12B. Franchise
+                |--------------------------------------------------------------------------
+                */
+
+                else {
+
+                    $sourceType = 'FRC';
+
+
+                    /*
+                    | Ambil jns_bank dari rekening pertama
+                    */
+
+                    $firstAccount = $fileAccounts[0];
+
+                    $sourceJnsBank = trim(
+                        $bankAccountMap[$firstAccount]->jns_bank
+                    );
+
+
+                    /*
+                    | Pastikan seluruh rekening dalam file
+                    | memiliki jns_bank yang sama
+                    */
+
+                    foreach ($fileAccounts as $account) {
+
+                        $currentJnsBank = trim(
+                            $bankAccountMap[$account]->jns_bank
+                        );
+
+
+                        if (
+                            strcasecmp(
+                                $currentJnsBank,
+                                $sourceJnsBank
+                            ) !== 0
+                        ) {
+
+                            $errors[] = [
+                                'file' => $fileName,
+                                'issues' => [
+                                    "File Franchise mencampur jns_bank '{$sourceJnsBank}' dengan '{$currentJnsBank}'. Satu file hanya boleh berisi satu jns_bank."
+                                ]
+                            ];
+
+                            continue 2;
+                        }
+                    }
+
+
+                    /*
+                    | Ambil semua no_rek yang terdaftar
+                    | pada cabang + jns_bank tersebut
+                    */
+
+                    $sourceAccounts = DB::table('bank')
+                        ->where('cabang', $cabang)
+                        ->where('jns_bank', $sourceJnsBank)
+                        ->pluck('no_rek')
+                        ->map(fn($v) => trim($v))
+                        ->filter()
+                        ->unique()
+                        ->values()
+                        ->toArray();
+
+
+                    if (empty($sourceAccounts)) {
+
+                        $errors[] = [
+                            'file' => $fileName,
+                            'issues' => [
+                                "Tidak ditemukan rekening untuk jns_bank '{$sourceJnsBank}' pada cabang {$cabang}."
+                            ]
+                        ];
+
+                        continue;
+                    }
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 13. Ambil existing Receipt berdasarkan:
+                |
+                | - sourceAccounts
+                | - periode Mutasi aktif
+                |
+                |--------------------------------------------------------------------------
+                |
+                | INI adalah perubahan utama dari kode sebelumnya.
+                |
+                | Sebelumnya hanya:
+                |
+                |   receipt_date BETWEEN periode
+                |
+                | Sekarang:
+                |
+                |   remittance_bank_account IN sourceAccounts
+                |   DAN
+                |   receipt_date BETWEEN periode
+                |
+                */
+
+                $existingReceipt = DB::table('receipt')
+                    ->select(
+                        'id',
+                        'receipt_number',
+                        'receipt_status',
+                        'receipt_state'
+                    )
+                    ->whereIn(
+                        'remittance_bank_account',
+                        $sourceAccounts
+                    )
+                    ->whereBetween('receipt_date', [
+                        $activePeriod->start_date,
+                        $activePeriod->end_date
+                    ])
+                    ->get()
+                    ->keyBy('receipt_number');
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | 14. Proses setiap baris CSV
+                |--------------------------------------------------------------------------
+                */
+
+                foreach ($rows as $item) {
+
+                    $line = $item['line'];
+                    $row  = $item['data'];
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Mapping CSV
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $receiptMethod         = trim($row[0]);
                     $remittanceBankAccount = trim($row[1]);
                     $receiptNumber         = trim($row[2]);
                     $receiptAmount         = str_replace(",", "", trim($row[3]));
@@ -3465,33 +4611,58 @@ class StatementController extends Controller
                     $activity              = trim($row[10]);
                     $paidBy                = trim($row[11]);
 
+
                     /*
                     |--------------------------------------------------------------------------
-                    | Validasi Receipt Method
+                    | 15. Validasi rekening terhadap scope file
                     |--------------------------------------------------------------------------
                     */
 
-                    if (!isset($validReceiptMethod[$receiptMethod])) {
+                    if (!in_array(
+                        $remittanceBankAccount,
+                        $sourceAccounts,
+                        true
+                    )) {
 
                         $errors[] = [
-
-                            'file' => $file->getClientOriginalName(),
-
+                            'file' => $fileName,
                             'issues' => [
-
-                                "Baris {$line} : Receipt Method '{$receiptMethod}' tidak terdaftar pada cabang {$cabang}."
-
+                                "Baris {$line} : Remittance Bank Account '{$remittanceBankAccount}' tidak termasuk dalam scope rekening file."
                             ]
-
                         ];
 
                         continue;
-
                     }
+
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Format Tanggal
+                    | 16. Validasi khusus REG
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if ($sourceType === 'REG') {
+
+                        if (
+                            $remittanceBankAccount !==
+                            $sourceAccounts[0]
+                        ) {
+
+                            $errors[] = [
+                                'file' => $fileName,
+                                'issues' => [
+                                    "Baris {$line} : Rekening REG '{$remittanceBankAccount}' tidak sesuai dengan rekening file '{$sourceAccounts[0]}'."
+                                ]
+                            ];
+
+                            continue;
+                        }
+                    }
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 17. Format tanggal
                     |--------------------------------------------------------------------------
                     */
 
@@ -3502,6 +4673,7 @@ class StatementController extends Controller
                             $receiptDate
                         )->format('Y-m-d');
 
+
                         $glDate = Carbon::createFromFormat(
                             'd/m/y',
                             $glDate
@@ -3510,146 +4682,242 @@ class StatementController extends Controller
                     } catch (\Exception $e) {
 
                         $errors[] = [
-
-                            'file' => $file->getClientOriginalName(),
-
+                            'file' => $fileName,
                             'issues' => [
-
                                 "Baris {$line} format tanggal salah."
-
                             ]
-
                         ];
 
                         continue;
-
                     }
+
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Cek Receipt Number
+                    | 18. Validasi Receipt Date terhadap periode aktif
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if (
+                        $receiptDate < $activePeriod->start_date ||
+                        $receiptDate > $activePeriod->end_date
+                    ) {
+
+                        $errors[] = [
+                            'file' => $fileName,
+                            'issues' => [
+                                "Baris {$line} : Receipt Date {$receiptDate} berada di luar periode aktif Mutasi {$activePeriod->start_date} s/d {$activePeriod->end_date}."
+                            ]
+                        ];
+
+                        continue;
+                    }
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 19. Cek Receipt Number
                     |--------------------------------------------------------------------------
                     */
 
                     if ($existingReceipt->has($receiptNumber)) {
 
                         $old = $existingReceipt[$receiptNumber];
-                    
+
+
                         /*
                         |--------------------------------------------------------------------------
-                        | Jika status di database sudah Reversed, abaikan
+                        | Jika status database sudah Reversed
                         |--------------------------------------------------------------------------
                         */
-                    
-                        if (strcasecmp($old->receipt_status, 'Reversed') === 0) {
-                    
+
+                        if (
+                            strcasecmp(
+                                $old->receipt_status,
+                                'Reversed'
+                            ) === 0
+                        ) {
+
                             $skipped++;
+
                             continue;
-                    
                         }
-                    
+
+
                         /*
                         |--------------------------------------------------------------------------
                         | Cek apakah Status / State berubah
                         |--------------------------------------------------------------------------
                         */
-                    
-                        $statusChanged = strcasecmp($old->receipt_status, $receiptStatus) !== 0;
-                        $stateChanged  = strcasecmp($old->receipt_state, $receiptState) !== 0;
-                    
+
+                        $statusChanged =
+                            strcasecmp(
+                                $old->receipt_status,
+                                $receiptStatus
+                            ) !== 0;
+
+
+                        $stateChanged =
+                            strcasecmp(
+                                $old->receipt_state,
+                                $receiptState
+                            ) !== 0;
+
+
                         /*
                         |--------------------------------------------------------------------------
                         | Tidak ada perubahan
                         |--------------------------------------------------------------------------
                         */
-                    
-                        if (!$statusChanged && !$stateChanged) {
-                    
+
+                        if (
+                            !$statusChanged &&
+                            !$stateChanged
+                        ) {
+
                             $skipped++;
+
                             continue;
-                    
                         }
-                    
+
+
                         /*
                         |--------------------------------------------------------------------------
                         | Siapkan Update
                         |--------------------------------------------------------------------------
                         */
-                    
+
                         $updateData[] = [
-                    
-                            'id'             => $old->id,
-                            'receipt_status' => $receiptStatus,
-                            'receipt_state'  => $receiptState,
-                    
-                            // trx_id dikosongkan hanya jika status baru Reversed
-                            'clear_trx'      => (strcasecmp($receiptStatus, 'Reversed') === 0)
-                    
+
+                            'id' =>
+                                $old->id,
+
+                            'receipt_status' =>
+                                $receiptStatus,
+
+                            'receipt_state' =>
+                                $receiptState,
+
+                            /*
+                            | trx_id dikosongkan hanya jika
+                            | status baru Reversed
+                            */
+
+                            'clear_trx' =>
+                                (
+                                    strcasecmp(
+                                        $receiptStatus,
+                                        'Reversed'
+                                    ) === 0
+                                )
                         ];
-                    
+
+
                         $updated++;
-                    
+
                         continue;
-                    
                     }
+
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Belum Ada -> Siapkan Insert
+                    | 20. Receipt belum ada -> INSERT
                     |--------------------------------------------------------------------------
                     */
 
                     $insertData[] = [
 
-                        'receipt_method'            => $receiptMethod,
-                        'remittance_bank_account'  => $remittanceBankAccount,
-                        'receipt_number'           => $receiptNumber,
-                        'receipt_amount'           => $receiptAmount,
-                        'receipt_date'             => $receiptDate,
-                        'gl_date'                  => $glDate,
-                        'receipt_type'             => $receiptType,
-                        'receipt_status'           => $receiptStatus,
-                        'receipt_state'            => $receiptState,
-                        'comments'                 => $comments,
-                        'activity'                 => $activity,
-                        'paid_by'                  => $paidBy,
-                        'trx_id'                  => ''
+                        'receipt_method' =>
+                            $receiptMethod,
 
+                        'remittance_bank_account' =>
+                            $remittanceBankAccount,
+
+                        'receipt_number' =>
+                            $receiptNumber,
+
+                        'receipt_amount' =>
+                            $receiptAmount,
+
+                        'receipt_date' =>
+                            $receiptDate,
+
+                        'gl_date' =>
+                            $glDate,
+
+                        'receipt_type' =>
+                            $receiptType,
+
+                        'receipt_status' =>
+                            $receiptStatus,
+
+                        'receipt_state' =>
+                            $receiptState,
+
+                        'comments' =>
+                            $comments,
+
+                        'activity' =>
+                            $activity,
+
+                        'paid_by' =>
+                            $paidBy,
+
+                        'trx_id' =>
+                            ''
                     ];
 
-                    $existingReceipt->put($receiptNumber, (object)[
-                        'id' => 0,
-                        'receipt_status' => $receiptStatus,
-                        'receipt_state'=>$receiptState
-                    ]);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Masukkan ke existingReceipt sementara
+                    |--------------------------------------------------------------------------
+                    |
+                    | Agar jika receipt_number yang sama muncul
+                    | lagi dalam file yang sama, tidak terjadi
+                    | INSERT dua kali.
+                    |
+                    */
+
+                    $existingReceipt->put(
+                        $receiptNumber,
+                        (object) [
+                            'id' => 0,
+                            'receipt_status' =>
+                                $receiptStatus,
+                            'receipt_state' =>
+                                $receiptState
+                        ]
+                    );
+
 
                     $inserted++;
-
                 }
-
-                fclose($handle);
-
             }
+
 
             /*
             |--------------------------------------------------------------------------
-            | Bulk Insert
+            | 21. Bulk Insert
             |--------------------------------------------------------------------------
             */
 
             if (!empty($insertData)) {
 
-                foreach (array_chunk($insertData, 1000) as $chunk) {
+                foreach (
+                    array_chunk($insertData, 1000)
+                    as $chunk
+                ) {
 
-                    DB::table('receipt')->insert($chunk);
-
+                    DB::table('receipt')
+                        ->insert($chunk);
                 }
-
             }
+
 
             /*
             |--------------------------------------------------------------------------
-            | Bulk Update Receipt
+            | 22. Update Receipt
             |--------------------------------------------------------------------------
             */
 
@@ -3658,33 +4926,48 @@ class StatementController extends Controller
                 foreach ($updateData as $row) {
 
                     $update = [
-                
-                        'receipt_status' => $row['receipt_status'],
-                        'receipt_state'  => $row['receipt_state']
-                
-                    ];
-                
-                    if ($row['clear_trx']) {
-                
-                        $update['trx_id'] = '';
-                
-                    }
-                
-                    DB::table('receipt')
-                        ->where('id',$row['id'])
-                        ->update($update);
-                
-                }
 
+                        'receipt_status' =>
+                            $row['receipt_status'],
+
+                        'receipt_state' =>
+                            $row['receipt_state']
+                    ];
+
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Jika status baru Reversed
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if ($row['clear_trx']) {
+
+                        $update['trx_id'] = '';
+                    }
+
+
+                    DB::table('receipt')
+                        ->where('id', $row['id'])
+                        ->update($update);
+                }
             }
+
 
             /*
             |--------------------------------------------------------------------------
-            | Commit
+            | 23. Commit
             |--------------------------------------------------------------------------
             */
 
             DB::commit();
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | 24. Response
+            |--------------------------------------------------------------------------
+            */
 
             return response()->json([
 
@@ -3696,30 +4979,41 @@ class StatementController extends Controller
                     Update : {$updated} data<br>
                     Skip : {$skipped} data",
 
-                'inserted' => $inserted,
+                'inserted' =>
+                    $inserted,
 
-                'updated' => $updated,
+                'updated' =>
+                    $updated,
 
-                'skipped' => $skipped,
+                'skipped' =>
+                    $skipped,
 
-                'errors' => $errors
-
+                'errors' =>
+                    $errors
             ]);
 
+
         } catch (\Throwable $e) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Rollback jika terjadi error
+            |--------------------------------------------------------------------------
+            */
 
             DB::rollBack();
 
             Log::error($e);
 
+
             return response()->json([
 
                 'success' => false,
 
-                'message' => $e->getMessage()
+                'message' =>
+                    $e->getMessage()
 
-            ],500);
-
+            ], 500);
         }
     }
 

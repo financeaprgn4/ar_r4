@@ -57,20 +57,106 @@ class LegacyFileController extends Controller
 
     public function statement($cabang, $filename)
     {
-        $rk = DB::table('rk')
-            ->where('cabang', $cabang)
-            ->where('file', $filename)
-            ->first();
+        $filename = basename($filename);
 
-        if (!$rk) {
-            abort(404, 'Data file tidak ditemukan pada tabel RK.');
+        $extension = strtolower(
+            pathinfo($filename, PATHINFO_EXTENSION)
+        );
+
+        if ($extension === 'pdf') {
+
+            // =========================
+            // FILE PDF → TABEL RK
+            // =========================
+            $data = DB::table('rk')
+                ->where('cabang', $cabang)
+                ->where('file', $filename)
+                ->first();
+
+            if (!$data) {
+
+                \Log::error('FILE TIDAK ADA DI RK', [
+                    'cabang' => $cabang,
+                    'filename' => $filename,
+                ]);
+
+                abort(
+                    404,
+                    'Data file tidak ditemukan pada tabel RK.'
+                );
+            }
+
+        } else {
+
+            // =========================
+            // FILE NON-PDF → TABEL MUTASI
+            // =========================
+            $data = DB::table('mutasi')
+                ->where('cabang', $cabang)
+                ->where('file', $filename)
+                ->first();
+
+            // =========================
+            // JIKA TIDAK ADA DI MUTASI
+            // → CARI DI MUTASI_FRC
+            // =========================
+            if (!$data) {
+
+                \Log::warning('FILE TIDAK ADA DI MUTASI, CEK MUTASI_FRC', [
+                    'cabang' => $cabang,
+                    'filename' => $filename,
+                ]);
+
+                $data = DB::table('mutasi_frc')
+                    ->where('cabang', $cabang)
+                    ->where('file', $filename)
+                    ->first();
+            }
+
+            // =========================
+            // JIKA TIDAK ADA DI KEDUANYA
+            // =========================
+            if (!$data) {
+
+                \Log::error('FILE TIDAK ADA DI MUTASI DAN MUTASI_FRC', [
+                    'cabang' => $cabang,
+                    'filename' => $filename,
+                ]);
+
+                abort(
+                    404,
+                    'Data file tidak ditemukan pada tabel Mutasi maupun Mutasi FRC.'
+                );
+            }
         }
 
-        $path = trim($rk->path);
-        $filePath = $path . DIRECTORY_SEPARATOR . $filename;
+        // =========================
+        // AMBIL PATH FILE
+        // =========================
+        $path = trim($data->path);
 
+        $filePath =
+            $path .
+            DIRECTORY_SEPARATOR .
+            $filename;
+
+        \Log::info('FILE PATH', [
+            'cabang' => $cabang,
+            'filename' => $filename,
+            'path' => $path,
+            'filePath' => $filePath,
+            'exists' => file_exists($filePath),
+        ]);
+
+        // =========================
+        // CEK FILE FISIK
+        // =========================
         if (!file_exists($filePath)) {
-            abort(404, 'File tidak ditemukan pada lokasi storage.');
+
+            abort(
+                404,
+                'File tidak ditemukan pada lokasi storage.'
+            );
         }
 
         return response()->file($filePath);

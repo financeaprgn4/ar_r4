@@ -456,7 +456,7 @@ class GLImportService
 
                 SUM(
                     CASE
-                        WHEN src <> 'Receivables'
+                        WHEN src NOT IN ('Receivables', 'Manual')
                         THEN nilai
                         ELSE 0
                     END
@@ -464,7 +464,7 @@ class GLImportService
 
                 SUM(
                     CASE
-                        WHEN src = 'Receivables'
+                        WHEN src IN ('Receivables', 'Manual')
                         THEN nilai
                         ELSE 0
                     END

@@ -596,4 +596,14 @@ class PeriodeController extends Controller
             ], 500);
         }
     }
+
+    private function getActiveMutasiPeriod($cabang)
+    {
+        return DB::table('periode')
+            ->where('Cabang', $cabang)
+            ->where('kategori', 'Mutasi')
+            ->where('status', 'Aktif')
+            ->orderByDesc('start_date')
+            ->first();
+    }
 }
