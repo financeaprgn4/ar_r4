@@ -165,7 +165,11 @@ export default function Rekon_bank() {
             console.time("2. response.json");
     
             const result = await response.json();
-    
+            console.log("======================================");
+            console.log("BULK ACTION BACKEND PROFILING");
+            console.table(result.profiling);
+            console.log("======================================");
+
             console.timeEnd("2. response.json");
     
             console.log(
@@ -673,13 +677,237 @@ export default function Rekon_bank() {
     const [drawerFilter, setDrawerFilter] = useState("");
     const [drawerSummary, setDrawerSummary] = useState(null);
 
+    const openDetail = async (row, jenis) => {
+
+        console.log("========================================");
+        console.log("OPEN DETAIL");
+        console.log("========================================");
+    
+        console.log("Row:", row);
+        console.log("Jenis:", jenis);
+    
+        try {
+    
+            /*
+            |--------------------------------------------------------------------------
+            | TANGGAL
+            |--------------------------------------------------------------------------
+            */
+    
+            const tanggal =
+                row.tgl ??
+                row.tanggal ??
+                row.date;
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | NO REKENING
+            |--------------------------------------------------------------------------
+            */
+    
+            const rekening =
+                row.no_rek ??
+                selectedRekeningInfo?.no_rek ??
+                noRek;
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | BANK
+            |--------------------------------------------------------------------------
+            */
+    
+            const bankType =
+                row.jns_bank ??
+                row.bank ??
+                jenisBank;
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | PAYLOAD
+            |--------------------------------------------------------------------------
+            */
+    
+            const payload = {
+                cabang: cabang,
+                bank: bankType,
+                no_rek: rekening,
+                tgl: tanggal,
+                jenis: jenis,
+            };
+    
+            console.log("Payload detail:", payload);
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | RESET STATE DRAWER
+            |--------------------------------------------------------------------------
+            |
+            | Karena drawer yang sama digunakan oleh openUnrecDetail(),
+            | reset data lama terlebih dahulu agar data drawer sebelumnya
+            | tidak ikut tampil.
+            |
+            */
+    
+            setDrawerLoading(true);
+    
+            setDrawerData([]);
+    
+            setDrawerSummary(null);
+    
+            setDrawerInfo({
+                jenis,
+                tanggal,
+                no_rek: rekening,
+                bank: bankType
+            });
+    
+            setBulkAction(null);
+    
+            setDrawerRowSelection({});
+    
+            setSelectedDrawerRows([]);
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | TITLE
+            |--------------------------------------------------------------------------
+            */
+    
+            const drawerTitles = {
+                db: "Detail Mutasi DB",
+                cr: "Detail Mutasi CR",
+                gl_pay: "Detail GL Payables",
+                gl_rec: "Detail GL Receivables",
+            };
+    
+            setDrawerTitle(
+                drawerTitles[jenis] ?? "Detail Data"
+            );
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | BUKA CENTER DRAWER
+            |--------------------------------------------------------------------------
+            |
+            | Drawer dibuka menggunakan state yang sama dengan
+            | openUnrecDetail().
+            |
+            */
+    
+            setShowDrawer(true);
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | REQUEST DETAIL
+            |--------------------------------------------------------------------------
+            |
+            | Endpoint ini HANYA membaca detail.
+            |
+            | Tidak ada:
+            | - reconcile
+            | - unreconcile
+            | - bulk action
+            | - update database
+            | - recalculate
+            |
+            */
+    
+            const response = await axios.post(
+                "/api/rekon/view-detail",
+                payload
+            );
+    
+            console.log(
+                "Response detail:",
+                response.data
+            );
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | VALIDASI RESPONSE
+            |--------------------------------------------------------------------------
+            */
+    
+            if (!response.data?.success) {
+    
+                throw new Error(
+                    response.data?.message ??
+                    "Data detail tidak ditemukan."
+                );
+            }
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | DATA DETAIL
+            |--------------------------------------------------------------------------
+            */
+    
+            const detailData =
+                response.data.data ??
+                response.data.detail ??
+                [];
+    
+            console.log(
+                "Detail data:",
+                detailData
+            );
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | MASUKKAN KE DRAWER YANG SAMA
+            |--------------------------------------------------------------------------
+            */
+    
+            setDrawerData(detailData);
+    
+    
+        } catch (error) {
+    
+            console.error(
+                "OPEN DETAIL ERROR:",
+                error
+            );
+    
+            console.error(
+                "OPEN DETAIL RESPONSE:",
+                error.response?.data
+            );
+    
+    
+            Swal.fire({
+                icon: "error",
+                title: "Gagal Mengambil Detail",
+                text:
+                    error.response?.data?.message ??
+                    error.message ??
+                    "Terjadi kesalahan saat mengambil data detail.",
+            });
+    
+    
+        } finally {
+    
+            setDrawerLoading(false);
+    
+        }
+    };
+
     const openUnrecDetail = async (row, jenis) => {
 
         try {
     
             /*
             |--------------------------------------------------------------------------
-            | Simpan informasi drawer
+            | SIMPAN INFORMASI DRAWER
             |--------------------------------------------------------------------------
             */
     
@@ -692,9 +920,38 @@ export default function Rekon_bank() {
                 unrec_kredit: row.unrec_kredit
             });
     
+    
             /*
             |--------------------------------------------------------------------------
-            | Tampilkan drawer
+            | TITLE
+            |--------------------------------------------------------------------------
+            */
+    
+            setDrawerTitle(
+                `${jenis === "db" ? "DEBET" : "KREDIT"} - ${formatDate(row.tanggal)}`
+            );
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | RESET STATE
+            |--------------------------------------------------------------------------
+            */
+    
+            setDrawerData([]);
+    
+            setDrawerSummary(null);
+    
+            setBulkAction(null);
+    
+            setDrawerRowSelection({});
+    
+            setSelectedDrawerRows([]);
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | BUKA CENTER DRAWER
             |--------------------------------------------------------------------------
             */
     
@@ -702,17 +959,22 @@ export default function Rekon_bank() {
     
             setDrawerLoading(true);
     
-            setDrawerTitle(
-                `${jenis === "db" ? "DEBET" : "KREDIT"} - ${formatDate(row.tanggal)}`
-            );
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | REQUEST
+            |--------------------------------------------------------------------------
+            */
+    
             const response = await fetch(
                 "/api/rekon/unrec-detail",
                 {
                     method: "POST",
+    
                     headers: {
                         "Content-Type": "application/json"
                     },
+    
                     body: JSON.stringify({
                         no_rek: selectedRekeningInfo.no_rek,
                         tgl: row.tanggal,
@@ -722,7 +984,15 @@ export default function Rekon_bank() {
                 }
             );
     
+    
             const result = await response.json();
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | VALIDASI
+            |--------------------------------------------------------------------------
+            */
     
             if (!result.success) {
     
@@ -732,14 +1002,34 @@ export default function Rekon_bank() {
                 );
     
             }
-            
-            setBulkAction(null);
-            setDrawerSummary(result.summary || null);
-            setDrawerData(result.data || []);
+    
+    
+            /*
+            |--------------------------------------------------------------------------
+            | DATA DRAWER
+            |--------------------------------------------------------------------------
+            */
+    
+            setDrawerSummary(
+                result.summary || null
+            );
+    
+            setDrawerData(
+                result.data || []
+            );
+    
             setDrawerRowSelection({});
+    
             setSelectedDrawerRows([]);
     
+    
         } catch (error) {
+    
+            console.error(
+                "OPEN UNREC DETAIL ERROR:",
+                error
+            );
+    
             Swal.fire({
                 icon: "error",
                 title: "Gagal",
@@ -1577,7 +1867,7 @@ export default function Rekon_bank() {
                                                             font-medium
                                                         "
                                                     >
-                                                        {row.display_rek}
+                                                        {row.akun} - {row.display_rek}
                                                     </button>
                                                 </td>
 
@@ -1720,11 +2010,11 @@ export default function Rekon_bank() {
                                         </th>
 
                                         <th className="sticky top-[37px] z-50 bg-red-600 text-white border border-white p-2">
-                                            Cash In
+                                            Cash Out
                                         </th>
 
                                         <th className="sticky top-[37px] z-50 bg-red-600 text-white border border-white p-2">
-                                            Cash Out
+                                            Cash In
                                         </th>
 
                                         <th className="sticky top-[37px] z-50 bg-gray-500 text-white border border-white p-2">
@@ -1736,11 +2026,11 @@ export default function Rekon_bank() {
                                         </th>
 
                                         <th className="sticky top-[37px] z-50 bg-red-600 text-white border border-white p-2">
-                                            Cash In
+                                            Cash Out
                                         </th>
 
                                         <th className="sticky top-[37px] z-50 bg-red-600 text-white border border-white p-2">
-                                            Cash Out
+                                            Cash In
                                         </th>
 
                                     </tr>
@@ -1772,19 +2062,87 @@ export default function Rekon_bank() {
                                                     </td>
 
                                                     <td className="border p-2 text-right whitespace-nowrap">
-                                                        {formatRupiah(row.debet)}
+                                                        <div className="flex justify-end items-center gap-2">
+                                                            <span>
+                                                                {formatRupiah(row.debet)}
+                                                            </span>
+                                                            
+                                                            <button
+                                                                onClick={() =>
+                                                                    openDetail(
+                                                                        row,
+                                                                        "db"
+                                                                    )
+                                                                }
+                                                                className="text-blue-600 hover:text-blue-800"
+                                                                title="Lihat Detail"
+                                                            >
+                                                                <FaPencilAlt />
+                                                            </button>
+                                                        </div>
                                                     </td>
 
                                                     <td className="border p-2 text-right whitespace-nowrap">
-                                                        {formatRupiah(row.kredit)}
+                                                        <div className="flex justify-end items-center gap-2">
+                                                            <span>
+                                                                {formatRupiah(row.kredit)}
+                                                            </span>
+                                                            
+                                                            <button
+                                                                onClick={() =>
+                                                                    openetail(
+                                                                        row,
+                                                                        "cr"
+                                                                    )
+                                                                }
+                                                                className="text-blue-600 hover:text-blue-800"
+                                                                title="Lihat Detail"
+                                                            >
+                                                                <FaPencilAlt />
+                                                            </button>
+                                                        </div>
                                                     </td>
 
                                                     <td className="border p-2 text-right whitespace-nowrap">
-                                                        {formatRupiah(row.gl_payables)}
+                                                        <div className="flex justify-end items-center gap-2">
+                                                            <span>
+                                                                {formatRupiah(row.gl_payables)}
+                                                            </span>
+                                                            
+                                                            <button
+                                                                onClick={() =>
+                                                                    openDetail(
+                                                                        row,
+                                                                        "gl_pay"
+                                                                    )
+                                                                }
+                                                                className="text-blue-600 hover:text-blue-800"
+                                                                title="Lihat Detail"
+                                                            >
+                                                                <FaPencilAlt />
+                                                            </button>
+                                                        </div>
                                                     </td>
 
                                                     <td className="border p-2 text-right whitespace-nowrap">
-                                                        {formatRupiah(row.gl_receivables)}
+                                                        <div className="flex justify-end items-center gap-2">
+                                                            <span>
+                                                                {formatRupiah(row.gl_receivables)}
+                                                            </span>
+                                                            
+                                                            <button
+                                                                onClick={() =>
+                                                                    openDetail(
+                                                                        row,
+                                                                        "gl_rec"
+                                                                    )
+                                                                }
+                                                                className="text-blue-600 hover:text-blue-800"
+                                                                title="Lihat Detail"
+                                                            >
+                                                                <FaPencilAlt />
+                                                            </button>
+                                                        </div>
                                                     </td>
 
                                                     <td className="bg-red-200 border p-2 text-right whitespace-nowrap">
@@ -1807,11 +2165,8 @@ export default function Rekon_bank() {
                                                                         "db"
                                                                     )
                                                                 }
-                                                                className="
-                                                                    text-blue-600
-                                                                    hover:text-blue-800
-                                                                "
-                                                                title="Lihat Detail Debet"
+                                                                className="text-blue-600 hover:text-blue-800"
+                                                                title="Lihat Detail"
                                                             >
                                                                 <FaPencilAlt />
                                                             </button>

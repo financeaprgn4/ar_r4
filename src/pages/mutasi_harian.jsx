@@ -29,6 +29,7 @@ export default function Mutasi_harian() {
   const [globalFilter, setGlobalFilter] = useState("");
   const [selectedPeriode, setSelectedPeriode] = useState("");
   const [selectedKategori, setSelectedKategori] = useState("Reguler");
+  const [tableKey, setTableKey] = useState(0);
   
   const [activeDrawer, setActiveDrawer] = useState(null);
   const showDrawer = activeDrawer === 'bottom';
@@ -235,8 +236,9 @@ export default function Mutasi_harian() {
         <b>${failCount}</b> gagal dihapus
       `,
     }).then(() => {
-      fetchData();
       setSelectedRows([]);
+      setTableKey(prev => prev + 1);
+      fetchData();
     });
   };
 
@@ -735,6 +737,7 @@ export default function Mutasi_harian() {
         {/* TABLE */}
         <ReusableTableNew
           data={data}
+          key={tableKey}
           columns={columns}
           periodFilter={selectedPeriode}
           setPeriodFilter={setSelectedPeriode}

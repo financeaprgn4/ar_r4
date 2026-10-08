@@ -327,14 +327,6 @@ class GLImportService
 
             ->where('cabang', $this->cabang)
 
-            ->whereBetween('gldate', [
-
-                $this->periode->start_date,
-
-                $this->periode->end_date
-
-            ])
-
             ->delete();
     }
 

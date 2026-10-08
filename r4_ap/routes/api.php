@@ -19,6 +19,7 @@ use App\Http\Controllers\LaporanLpdController;
 use App\Http\Controllers\LegacyFileController;
 use App\Http\Controllers\PDFMergeController;
 use App\Http\Controllers\ReconciliationController;
+use App\Http\Controllers\BankController;
 use App\Http\Controllers\FTPController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -149,6 +150,8 @@ Route::prefix('master-dat-pr')->group(function () {
     Route::post('/search', [DatPRController::class, 'search']);
 });
 
+Route::apiResource('bank', BankController::class);
+
 Route::prefix('rekon')->group(function () {
     Route::get('/type-bank', [ReconciliationController::class, 'getTypeBank']);
     Route::get('/rekening-reg', [ReconciliationController::class, 'getRekeningReg']);
@@ -164,6 +167,7 @@ Route::prefix('rekon')->group(function () {
     Route::get('/history/filters',[ReconciliationController::class,'getReconciliationHistoryFilters']);
     Route::get('/history',[ ReconciliationController::class,'getReconciliationHistory']);
     Route::post('/manual',[ReconciliationController::class,'manualReconciliation']);
+    Route::post('/view-detail',[ReconciliationController::class,'ViewDetail']);
 });
 
 Route::get('/gl', [FTPController::class, 'listFile']);

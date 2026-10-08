@@ -125,11 +125,86 @@ class FtpService
 
             $isFolder = str_starts_with($permission, 'd');
 
+            /*
+            |--------------------------------------------------------------------------
+            | Format tanggal / waktu
+            |--------------------------------------------------------------------------
+            */
+
+            $modified = null;
+
+            if (!$isFolder) {
+
+                try {
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | FTP rawlist biasanya:
+                    |
+                    | file baru:
+                    | Oct 07 10:30 file.csv
+                    |
+                    | file lama:
+                    | Oct 07 2025 file.csv
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $currentYear = now('Asia/Jakarta')->year;
+
+                    if (str_contains($timeOrYear, ':')) {
+
+                        // Contoh:
+                        // Oct 07 10:30
+
+                        $dateString =
+                            "{$month} {$day} {$currentYear} {$timeOrYear}";
+
+                    } else {
+
+                        // Contoh:
+                        // Oct 07 2025
+
+                        $dateString =
+                            "{$month} {$day} {$timeOrYear} 00:00";
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | FTP diasumsikan menggunakan UTC
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $modifiedDate = Carbon::createFromFormat(
+                        'M d Y H:i',
+                        $dateString,
+                        'UTC'
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Konversi UTC -> WIB
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $modifiedDate->setTimezone('Asia/Jakarta');
+
+                    $modified =
+                        $modifiedDate->format('d-M-Y H:i:s');
+
+                } catch (\Throwable $e) {
+
+                    // Jika parsing gagal, tetap tampilkan nilai FTP asli
+                    $modified =
+                        "{$month} {$day} {$timeOrYear}";
+                }
+            }
+
             $result[] = [
 
                 'name' => $name,
 
-                'path' => rtrim($path, '/') . '/' . $name,
+                'path' =>
+                    rtrim($path, '/') . '/' . $name,
 
                 'type' => $isFolder
                     ? 'folder'
@@ -139,8 +214,7 @@ class FtpService
                     ? null
                     : (int) $size,
 
-                'modified' => "{$month} {$day} {$timeOrYear}"
-
+                'modified' => $modified
             ];
         }
 
@@ -156,7 +230,10 @@ class FtpService
                 return $a['type'] === 'folder' ? -1 : 1;
             }
 
-            return strcasecmp($a['name'], $b['name']);
+            return strcasecmp(
+                $a['name'],
+                $b['name']
+            );
         });
 
         return $result;
