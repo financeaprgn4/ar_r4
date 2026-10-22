@@ -188,17 +188,6 @@ const handleExport = (format) => {
   
     try {
   
-      // ------------------------------------------------------
-      // Mapping data
-      // ------------------------------------------------------
-      //
-      // Kita TIDAK langsung export data mentah.
-      //
-      // Tujuannya agar nama kolom dan isi file mengikuti
-      // tampilan tabel.
-      //
-      // ------------------------------------------------------
-  
       const exportData = data.map((item, index) => {
   
         const noRek =
@@ -228,7 +217,10 @@ const handleExport = (format) => {
   
           "No Rekening":
             noRek || "",
-  
+          
+          "Kategori":
+            item.dept || "",
+
           Status:
             item.reconciled === "Y"
               ? "Reconciled"
@@ -496,6 +488,15 @@ const handleExport = (format) => {
                 ? `${noRek} - ${kdToko}`
                 : noRek;
         },
+    },
+
+    {
+      header: "Kategori",
+      accessorKey: "dept",
+      size: 120,
+      cell: ({ getValue }) => {
+          return getValue() || "-";
+      },
     },
 
     {

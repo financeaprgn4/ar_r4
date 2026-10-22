@@ -11,11 +11,17 @@ import {
 export default function ReusableTableNew({
   data = [],
   columns = [],
+
+  // Filter Periode
+  showPeriodFilter = false,
   periodFilter,
   setPeriodFilter,
   periodOptions = [],
+
+  // Filter Kategori
   categoryFilter,
   setCategoryFilter,
+
   globalFilter,
   setGlobalFilter,
   leftElement,
@@ -62,7 +68,10 @@ export default function ReusableTableNew({
   });
 
   useEffect(() => {
-    const selected = table.getSelectedRowModel().rows.map((row) => row.original);
+    const selected = table
+      .getSelectedRowModel()
+      .rows.map((row) => row.original);
+
     onSelectionChange?.(selected);
   }, [table.getSelectedRowModel().rows]);
 
@@ -72,6 +81,7 @@ export default function ReusableTableNew({
         e.preventDefault();
         searchInputRef?.current?.focus();
       }
+
       if (e.altKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
         selectRef?.current?.focus();
@@ -79,6 +89,7 @@ export default function ReusableTableNew({
     };
 
     document.addEventListener("keydown", handleKeyDown);
+
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
@@ -88,20 +99,27 @@ export default function ReusableTableNew({
     <div className="w-full">
       {/* FILTER AREA */}
       <div className="p-3 bg-white/70 rounded-lg shadow flex flex-wrap items-center gap-4 mb-4">
+
         {/* Filter Periode */}
-        <label className="font-semibold">Periode:</label>
-        <select
-          className="border px-3 py-1 rounded"
-          value={periodFilter}
-          onChange={(e) => setPeriodFilter(e.target.value)}
-        >
-          <option value="">Semua Periode</option>
-          {periodOptions.map((p) => (
-            <option key={p.id} value={p.periode}>
-              {p.periode}
-            </option>
-          ))}
-        </select>
+        {showPeriodFilter && (
+          <>
+            <label className="font-semibold">Periode:</label>
+
+            <select
+              className="border px-3 py-1 rounded"
+              value={periodFilter}
+              onChange={(e) => setPeriodFilter(e.target.value)}
+            >
+              <option value="">Semua Periode</option>
+
+              {periodOptions.map((p) => (
+                <option key={p.id} value={p.periode}>
+                  {p.periode}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         {/* Filter Kategori */}
         <label className="font-semibold">Kategori:</label>
@@ -113,6 +131,7 @@ export default function ReusableTableNew({
           <option value="Reguler">Reguler</option>
           <option value="Franchise">Franchise</option>
         </select>
+
         {leftElement}
 
         {/* GLOBAL SEARCH */}
@@ -139,6 +158,7 @@ export default function ReusableTableNew({
 
                 {hg.headers.map((header) => {
                   const sorted = header.column.getIsSorted();
+
                   return (
                     <th
                       key={header.id}
@@ -146,7 +166,11 @@ export default function ReusableTableNew({
                       onClick={header.column.getToggleSortingHandler()}
                     >
                       <div className="flex items-center justify-center gap-1">
-                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        {flexRender(
+                          header.column.columnDef.header,
+                          header.getContext()
+                        )}
+
                         {sorted === "asc" && "▲"}
                         {sorted === "desc" && "▼"}
                       </div>
@@ -175,7 +199,10 @@ export default function ReusableTableNew({
                         cell.column.columnDef.meta?.className ?? ""
                       }`}
                     >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      {flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      )}
                     </td>
                   ))}
                 </tr>
@@ -197,15 +224,47 @@ export default function ReusableTableNew({
       {/* PAGINATION */}
       <div className="flex items-center justify-between mt-4">
         <div className="flex gap-1">
-          <button onClick={() => table.setPageIndex(0)} disabled={!table.getCanPreviousPage()} className="px-2 py-1 border rounded">{"<<"}</button>
-          <button onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()} className="px-2 py-1 border rounded">{"<"}</button>
-          <button onClick={() => table.nextPage()} disabled={!table.getCanNextPage()} className="px-2 py-1 border rounded">{">"}</button>
-          <button onClick={() => table.setPageIndex(table.getPageCount() - 1)} disabled={!table.getCanNextPage()} className="px-2 py-1 border rounded">{">>"}</button>
+          <button
+            onClick={() => table.setPageIndex(0)}
+            disabled={!table.getCanPreviousPage()}
+            className="px-2 py-1 border rounded"
+          >
+            {"<<"}
+          </button>
+
+          <button
+            onClick={() => table.previousPage()}
+            disabled={!table.getCanPreviousPage()}
+            className="px-2 py-1 border rounded"
+          >
+            {"<"}
+          </button>
+
+          <button
+            onClick={() => table.nextPage()}
+            disabled={!table.getCanNextPage()}
+            className="px-2 py-1 border rounded"
+          >
+            {">"}
+          </button>
+
+          <button
+            onClick={() =>
+              table.setPageIndex(table.getPageCount() - 1)
+            }
+            disabled={!table.getCanNextPage()}
+            className="px-2 py-1 border rounded"
+          >
+            {">>"}
+          </button>
         </div>
 
         <span>
           Halaman{" "}
-          <strong>{table.getState().pagination.pageIndex + 1} / {table.getPageCount()}</strong>
+          <strong>
+            {table.getState().pagination.pageIndex + 1} /{" "}
+            {table.getPageCount()}
+          </strong>
         </span>
 
         <select
@@ -223,6 +282,7 @@ export default function ReusableTableNew({
               Tampilkan {s}
             </option>
           ))}
+
           <option value={-1}>Tampilkan Semua</option>
         </select>
       </div>

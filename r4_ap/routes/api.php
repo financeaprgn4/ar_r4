@@ -150,7 +150,12 @@ Route::prefix('master-dat-pr')->group(function () {
     Route::post('/search', [DatPRController::class, 'search']);
 });
 
-Route::apiResource('bank', BankController::class);
+Route::prefix('bank')->group(function () {
+    Route::get('/', [BankController::class, 'index']);
+    Route::post('/', [BankController::class, 'store']);
+    Route::put('/{id}', [BankController::class, 'update']);
+    Route::delete('/{id}', [BankController::class, 'destroy']);
+});
 
 Route::prefix('rekon')->group(function () {
     Route::get('/type-bank', [ReconciliationController::class, 'getTypeBank']);
@@ -164,10 +169,13 @@ Route::prefix('rekon')->group(function () {
     Route::get('/receipt', [ReconciliationController::class,'reconcileReceipt']);
     Route::get('/receipt/export', [ReconciliationController::class,'export']);
     Route::get('/rekening',[ReconciliationController::class, 'getRekeningRekonsiliasi']);
+    Route::get('/metode',[ReconciliationController::class, 'getReconciliationMethods']);
     Route::get('/history/filters',[ReconciliationController::class,'getReconciliationHistoryFilters']);
     Route::get('/history',[ ReconciliationController::class,'getReconciliationHistory']);
     Route::post('/manual',[ReconciliationController::class,'manualReconciliation']);
     Route::post('/view-detail',[ReconciliationController::class,'ViewDetail']);
+    Route::post('/update-mutasi',[ReconciliationController::class, 'updateMutasi']);
+    Route::post('/update-receipt',[ReconciliationController::class, 'updateReceipt']);
 });
 
 Route::get('/gl', [FTPController::class, 'listFile']);

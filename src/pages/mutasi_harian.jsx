@@ -739,9 +739,12 @@ export default function Mutasi_harian() {
           data={data}
           key={tableKey}
           columns={columns}
+          
+          showPeriodFilter={true}
           periodFilter={selectedPeriode}
           setPeriodFilter={setSelectedPeriode}
           periodOptions={periodeList}
+          
           globalFilter={globalFilter}
           setGlobalFilter={setGlobalFilter}
           categoryFilter={selectedKategori}

@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+import React, { useRef, useEffect, useMemo, useState } from "react";
+import axios from "../config/axiosInstance";
+import { useSidebar } from "../components/SidebarContext";
 import Swal from "sweetalert2";
 
 import {
@@ -18,8 +19,9 @@ import ReusableTableNew from "../components/ReusableTableNew";
 
 
 export default function Bank() {
-
+  const { isCollapsed, setIsCollapsed } = useSidebar();
   const { cabang } = useCabang();
+  const bankInputRef = useRef(null);
 
   // =========================================================
   // STATE DATA
@@ -73,68 +75,53 @@ export default function Bank() {
 
   const fetchBank = async () => {
     if (!cabang) {
-        setData([]);
-        return;
+      setData([]);
+      return;
     }
-
+  
     try {
-        setLoading(true);
-
-        const response = await axios.get(
-            "http://127.0.0.1:8000/api/bank",
-            {
-                params: {
-                    cabang: cabang,
-                },
-            }
-        );
-
-        console.log("BANK RESPONSE:", response.data);
-
-        if (response.data?.success) {
-            setData(response.data.data || []);
-        } else {
-            setData([]);
-
-            Swal.fire({
-                icon: "warning",
-                title: "Data Bank",
-                text:
-                    response.data?.message ||
-                    "Data bank tidak tersedia.",
-            });
-        }
-
-    } catch (error) {
-
-        console.error("BANK API ERROR:", error);
-
-        console.error(
-            "STATUS:",
-            error.response?.status
-        );
-
-        console.error(
-            "DATA:",
-            error.response?.data
-        );
-
-        Swal.fire({
-            icon: "error",
-            title: "Gagal Memuat Data Bank",
-            text:
-                error.response?.data?.message ||
-                error.message ||
-                "Gagal menghubungi API bank.",
-        });
-
+      setLoading(true);
+  
+      const response = await axios.get("/api/bank", {
+        params: {
+          cabang: cabang,
+        },
+      });
+  
+      console.log("BANK RESPONSE:", response.data);
+  
+      if (response.data?.success) {
+        setData(response.data.data || []);
+      } else {
         setData([]);
-
+  
+        Swal.fire({
+          icon: "warning",
+          title: "Data Bank",
+          text:
+            response.data?.message ||
+            "Data bank tidak tersedia.",
+        });
+      }
+    } catch (error) {
+      console.error("BANK API ERROR:", error);
+      console.error("STATUS:", error.response?.status);
+      console.error("DATA:", error.response?.data);
+  
+      Swal.fire({
+        icon: "error",
+        title: "Gagal Memuat Data Bank",
+        text:
+          error.response?.data?.message ||
+          error.message ||
+          "Gagal menghubungi API bank.",
+      });
+  
+      setData([]);
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
-};
-
+  };
 
   // =========================================================
   // LOAD SAAT CABANG BERUBAH
@@ -305,265 +292,181 @@ export default function Bank() {
   // =========================================================
 
   const handleSubmit = async (e) => {
-
     e.preventDefault();
-
+  
     if (!validateForm()) {
       return;
     }
-
+  
     try {
-
       setSaving(true);
-
+  
       const payload = {
-
         cabang: cabang,
-
         bank: form.bank.trim(),
-
         jns_bank: form.jns_bank.trim(),
-
         no_rek: form.no_rek.trim(),
-
         akun: form.akun.trim(),
-
         ce: form.ce.trim(),
-
         site: form.site.trim(),
-
         bank_name: form.bank_name.trim(),
-
         acc_num: form.acc_num.trim(),
-
         receipt_method: form.receipt_method.trim(),
-
       };
-
-
+  
       let response;
-
-
+  
       // =====================================================
-      // UPDATE
+      // UPDATE REKENING
       // =====================================================
-
       if (editMode) {
-
         response = await axios.put(
           `/api/bank/${selectedId}`,
           payload
         );
-
       }
-
+  
       // =====================================================
-      // INSERT
+      // TAMBAH REKENING
       // =====================================================
-
       else {
-
         response = await axios.post(
           "/api/bank",
           payload
         );
-
       }
-
-
+  
       if (response.data?.success) {
-
         await Swal.fire({
           icon: "success",
-
           title: editMode
             ? "Berhasil Diubah"
             : "Berhasil Ditambahkan",
-
           text:
             response.data.message ||
-            (
-              editMode
-                ? "Data rekening berhasil diubah."
-                : "Data rekening berhasil ditambahkan."
-            ),
-
+            (editMode
+              ? "Data rekening berhasil diubah."
+              : "Data rekening berhasil ditambahkan."),
           timer: 1500,
-
           showConfirmButton: false,
         });
-
-
+  
         setShowModal(false);
-
         resetForm();
-
+  
         await fetchBank();
-
       } else {
-
         throw new Error(
           response.data?.message ||
           "Proses penyimpanan gagal."
         );
-
       }
-
     } catch (error) {
-
       console.error(
         "Gagal menyimpan data bank:",
         error
       );
-
+  
+      console.error("STATUS:", error.response?.status);
+      console.error("DATA:", error.response?.data);
+  
       Swal.fire({
         icon: "error",
-
         title: "Gagal",
-
         text:
           error.response?.data?.message ||
           error.message ||
           "Data rekening gagal disimpan.",
       });
-
     } finally {
-
       setSaving(false);
-
     }
   };
-
 
   // =========================================================
   // DELETE
   // =========================================================
 
   const handleDelete = async (row) => {
-
+    // =====================================================
+    // KONFIRMASI HAPUS REKENING
+    // =====================================================
     const result = await Swal.fire({
-
       icon: "warning",
-
       title: "Hapus Rekening?",
-
       html: `
         <div style="text-align:left">
-
           <p>Data berikut akan dihapus:</p>
-
           <br>
 
-          <b>Cabang:</b>
-          ${row.cabang || "-"}
-          <br>
-
-          <b>Bank:</b>
-          ${row.bank || "-"}
-          <br>
-
-          <b>Nomor Rekening:</b>
-          ${row.no_rek || "-"}
-          <br>
-
-          <b>Akun:</b>
-          ${row.akun || "-"}
-          <br>
-
-          <b>Jenis:</b>
-          ${row.jns_bank || "-"}
-          <br>
-
-          <b>Site:</b>
-          ${row.site || "-"}
-
+          <b>Cabang:</b> ${row.cabang || "-"}<br>
+          <b>Bank:</b> ${row.bank || "-"}<br>
+          <b>Nomor Rekening:</b> ${row.no_rek || "-"}<br>
+          <b>Akun:</b> ${row.akun || "-"}<br>
+          <b>Jenis:</b> ${row.jns_bank || "-"}<br>
+          <b>Site:</b> ${row.site || "-"}
         </div>
       `,
-
       showCancelButton: true,
-
       confirmButtonText: "Ya, Hapus",
-
       cancelButtonText: "Batal",
-
       confirmButtonColor: "#dc2626",
-
       cancelButtonColor: "#6b7280",
-
     });
-
 
     if (!result.isConfirmed) {
       return;
     }
 
-
+    // =====================================================
+    // PROSES HAPUS REKENING
+    // =====================================================
     try {
-
       setLoading(true);
 
       const response = await axios.delete(
         `/api/bank/${row.id}`
       );
 
-
       if (response.data?.success) {
-
         await Swal.fire({
-
           icon: "success",
-
           title: "Berhasil",
-
           text:
             response.data.message ||
             "Data rekening berhasil dihapus.",
-
           timer: 1500,
-
           showConfirmButton: false,
-
         });
 
-
         await fetchBank();
-
       } else {
-
         throw new Error(
           response.data?.message ||
           "Data gagal dihapus."
         );
-
       }
-
     } catch (error) {
-
       console.error(
         "Gagal menghapus data bank:",
         error
       );
 
+      console.error("STATUS:", error.response?.status);
+      console.error("DATA:", error.response?.data);
+
       Swal.fire({
-
         icon: "error",
-
         title: "Gagal",
-
         text:
           error.response?.data?.message ||
           error.message ||
           "Data rekening gagal dihapus.",
-
       });
-
     } finally {
-
       setLoading(false);
-
     }
   };
-
 
   // =========================================================
   // TABLE COLUMNS
@@ -876,7 +779,6 @@ export default function Bank() {
 
   ], []);
 
-
   // =========================================================
   // FILTER REG / FRC
   // =========================================================
@@ -901,8 +803,39 @@ export default function Bank() {
 
         return true;
     });
-}, [data, categoryFilter]);
+  }, [data, categoryFilter]);
 
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.altKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+  
+        // Hindari shortcut saat sedang mengetik di form
+        if (
+          ["INPUT", "TEXTAREA", "SELECT"].includes(
+            document.activeElement?.tagName
+          ) ||
+          document.activeElement?.isContentEditable
+        ) {
+          return;
+        }
+  
+        handleAdd();
+      }
+    };
+  
+    window.addEventListener("keydown", handleKeyDown);
+  
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleAdd]);
+
+  useEffect(() => {
+    if (showModal && !saving) {
+      bankInputRef.current?.focus();
+    }
+  }, [showModal, saving]);
 
   // =========================================================
   // RENDER
@@ -931,39 +864,6 @@ export default function Bank() {
           overflow-hidden
         "
       >
-
-        {/* ===================================================
-            HEADER
-        ==================================================== */}
-
-        <div
-          className="
-            box-header
-            text-white
-            shadow-md
-            flex
-            items-center
-            justify-center
-            mx-auto
-            mt-[-17px]
-            mb-4
-            h-[60px]
-            w-1/2
-            bg-blue-400
-            clip-path-custom
-          "
-        >
-
-          <h2 className="text-xl font-semibold">
-
-            Pengaturan Rekening Bank Cabang{" "}
-
-            {cabang || "-"}
-
-          </h2>
-
-        </div>
-
 
         {/* ===================================================
             TOOLBAR
@@ -1092,17 +992,6 @@ export default function Bank() {
 
           columns={columns}
 
-
-          // ReusableTableNew membutuhkan ini
-          periodFilter={periodFilter}
-
-          setPeriodFilter={
-            setPeriodFilter
-          }
-
-          periodOptions={[]}
-
-
           // Filter REG / FRC
           categoryFilter={
             categoryFilter
@@ -1160,13 +1049,10 @@ export default function Bank() {
 
       </div>
 
-
       {/* =====================================================
           MODAL TAMBAH / EDIT
       ====================================================== */}
-
       {showModal && (
-
         <div
           className="
             fixed
@@ -1179,36 +1065,26 @@ export default function Bank() {
             px-4
           "
           onMouseDown={(e) => {
-
-            if (
-              e.target === e.currentTarget
-            ) {
-
+            if (e.target === e.currentTarget) {
               handleCloseModal();
-
             }
-
           }}
         >
-
           <div
             className="
               w-full
               max-w-2xl
               bg-white
+              text-gray-800
               rounded-xl
               shadow-2xl
               overflow-hidden
             "
-            onMouseDown={(e) =>
-              e.stopPropagation()
-            }
+            onMouseDown={(e) => e.stopPropagation()}
           >
-
             {/* =================================================
                 MODAL HEADER
             ================================================== */}
-
             <div
               className="
                 bg-blue-500
@@ -1220,67 +1096,38 @@ export default function Bank() {
                 justify-between
               "
             >
-
               <div>
-
-                <h3
-                  className="
-                    text-lg
-                    font-semibold
-                  "
-                >
-
+                <h3 className="text-lg font-semibold text-white">
                   {editMode
                     ? "Edit Rekening Bank"
                     : "Tambah Rekening Bank"}
-
                 </h3>
 
-
-                <p
-                  className="
-                    text-xs
-                    text-blue-100
-                    mt-1
-                  "
-                >
-
+                <p className="text-xs text-blue-100 mt-1">
                   Cabang: {cabang || "-"}
-
                 </p>
-
               </div>
-
 
               <button
                 type="button"
-                onClick={
-                  handleCloseModal
-                }
+                onClick={handleCloseModal}
                 disabled={saving}
                 className="
                   p-2
                   rounded-full
+                  text-white
                   hover:bg-blue-600
                   disabled:opacity-50
                 "
               >
-
                 <FaTimes />
-
               </button>
-
             </div>
-
 
             {/* =================================================
                 FORM
             ================================================== */}
-
-            <form
-              onSubmit={handleSubmit}
-            >
-
+            <form onSubmit={handleSubmit}>
               <div
                 className="
                   p-5
@@ -1290,28 +1137,23 @@ export default function Bank() {
                   gap-4
                   max-h-[70vh]
                   overflow-y-auto
+                  bg-white
+                  text-gray-800
                 "
               >
-
-                {/* ===========================================
-                    CABANG
-                ============================================ */}
-
+                {/* CABANG */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Cabang
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1320,42 +1162,35 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
                       bg-gray-100
-                      text-gray-600
+                      text-gray-700
+                      placeholder-gray-400
+                      disabled:opacity-100
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    BANK
-                ============================================ */}
-
+                {/* BANK */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Bank{" "}
-
-                    <span className="text-red-500">
-                      *
-                    </span>
-
+                    <span className="text-red-500">*</span>
                   </label>
 
-
                   <input
+                    ref={bankInputRef}
                     type="text"
                     name="bank"
                     value={form.bank}
@@ -1366,95 +1201,77 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    JNS BANK
-                ============================================ */}
-
+                {/* JENIS BANK */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Jenis Bank{" "}
-
-                    <span className="text-red-500">
-                      *
-                    </span>
-
+                    <span className="text-red-500">*</span>
                   </label>
 
-
-                  <select
+                  <input
+                    type="text"
                     name="jns_bank"
                     value={form.jns_bank}
                     onChange={handleChange}
+                    maxLength={15}
                     disabled={saving}
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
-                  >
-
-                    <option value="REG">
-                      REG
-                    </option>
-
-                    <option value="FRC">
-                      FRC
-                    </option>
-
-                  </select>
-
+                  />
                 </div>
 
-
-                {/* ===========================================
-                    NO REK
-                ============================================ */}
-
+                {/* NO REKENING */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     No. Rekening{" "}
-
-                    <span className="text-red-500">
-                      *
-                    </span>
-
+                    <span className="text-red-500">*</span>
                   </label>
-
 
                   <input
                     type="text"
@@ -1467,42 +1284,37 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       font-mono
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    AKUN
-                ============================================ */}
-
+                {/* AKUN */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Akun{" "}
-
-                    <span className="text-red-500">
-                      *
-                    </span>
-
+                    <span className="text-red-500">*</span>
                   </label>
-
 
                   <input
                     type="text"
@@ -1515,38 +1327,36 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       font-mono
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    CE
-                ============================================ */}
-
+                {/* CE */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     CE
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1559,37 +1369,35 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    SITE
-                ============================================ */}
-
+                {/* SITE */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Site
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1597,43 +1405,41 @@ export default function Bank() {
                     value={form.site}
                     onChange={handleChange}
                     maxLength={4}
-                    placeholder="Site"
+                    placeholder="SITE"
                     disabled={saving}
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       uppercase
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    BANK NAME
-                ============================================ */}
-
+                {/* BANK NAME */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Bank Name
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1645,37 +1451,35 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    ACC NUM
-                ============================================ */}
-
+                {/* ACCOUNT NUMBER */}
                 <div>
-
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Account Number
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1687,42 +1491,36 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       font-mono
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
 
-
-                {/* ===========================================
-                    RECEIPT METHOD
-                ============================================ */}
-
-                <div
-                  className="
-                    md:col-span-2
-                  "
-                >
-
+                {/* RECEIPT METHOD */}
+                <div className="md:col-span-2">
                   <label
                     className="
                       block
                       text-sm
                       font-semibold
+                      text-gray-700
                       mb-1
                     "
                   >
-
                     Receipt Method
-
                   </label>
-
 
                   <input
                     type="text"
@@ -1734,24 +1532,26 @@ export default function Bank() {
                     className="
                       w-full
                       border
+                      border-gray-300
                       rounded-lg
                       px-3
                       py-2
+                      bg-white
+                      text-gray-800
+                      placeholder:text-gray-400
                       focus:outline-none
                       focus:ring-2
                       focus:ring-blue-400
+                      disabled:bg-gray-100
+                      disabled:text-gray-600
                     "
                   />
-
                 </div>
-
               </div>
-
 
               {/* =================================================
                   FOOTER MODAL
               ================================================== */}
-
               <div
                 className="
                   px-5
@@ -1763,12 +1563,9 @@ export default function Bank() {
                   gap-2
                 "
               >
-
                 <button
                   type="button"
-                  onClick={
-                    handleCloseModal
-                  }
+                  onClick={handleCloseModal}
                   disabled={saving}
                   className="
                     flex
@@ -1777,6 +1574,7 @@ export default function Bank() {
                     px-4
                     py-2
                     border
+                    border-gray-300
                     rounded-lg
                     bg-white
                     hover:bg-gray-100
@@ -1784,13 +1582,9 @@ export default function Bank() {
                     disabled:opacity-50
                   "
                 >
-
                   <FaTimes />
-
                   Batal
-
                 </button>
-
 
                 <button
                   type="submit"
@@ -1809,11 +1603,8 @@ export default function Bank() {
                     disabled:opacity-50
                   "
                 >
-
                   {saving ? (
-
                     <>
-
                       <div
                         className="
                           w-4
@@ -1827,34 +1618,24 @@ export default function Bank() {
                       />
 
                       Menyimpan...
-
                     </>
-
                   ) : (
-
                     <>
-
                       <FaSave />
 
                       {editMode
                         ? "Simpan Perubahan"
                         : "Simpan"}
-
                     </>
-
                   )}
-
                 </button>
-
               </div>
-
             </form>
-
           </div>
-
         </div>
-
       )}
+
+
 
     </main>
   );

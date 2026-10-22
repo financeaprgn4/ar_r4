@@ -6,7 +6,10 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Carbon\Carbon;
 use App\Services\ReconciliationService;
+use App\Services\RegularReconciliationService;
 
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
@@ -667,20 +670,12 @@ class ReconciliationController extends Controller
                 ], 422);
             }
 
-
-            /*
-            |--------------------------------------------------------------------------
-            | UNTUK SEMENTARA EXPORT INI KHUSUS FRC
-            |--------------------------------------------------------------------------
-            */
-
-            if ($type !== 'FRC') {
+            if (!in_array($type, ['FRC', 'REG'], true)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Export saat ini hanya tersedia untuk Rekonsiliasi Franchise.'
+                    'message' => 'Jenis rekonsiliasi tidak valid.'
                 ], 422);
             }
-
 
             /*
             |--------------------------------------------------------------------------
@@ -722,10 +717,23 @@ class ReconciliationController extends Controller
             $startDate = $period->start_date;
             $endDate   = $period->end_date;
 
+            /*
+            |--------------------------------------------------------------------------
+            | EXPORT REGULER
+            |--------------------------------------------------------------------------
+            */
+            if ($type === 'REG') {
+                return $this->exportRegularReconciliation(
+                    $cabang,
+                    $period,
+                    $startDate,
+                    $endDate
+                );
+            }
 
             /*
             |--------------------------------------------------------------------------
-            | AMBIL DAFTAR JENIS BANK FRC
+            | EXPORT FRC
             |--------------------------------------------------------------------------
             */
 
@@ -1114,6 +1122,1342 @@ class ReconciliationController extends Controller
                 'error'   => $e->getMessage()
             ], 500);
         }
+    }
+    
+    /*
+    |-----------------------------------------------------------------------------
+    | EXPORT REGULER
+    |-----------------------------------------------------------------------------
+    | Fungsi utama hanya mengatur data, workbook, sheet, dan download.
+    | Pola query, aging, formula, dan format laporan tetap mengikuti kode lama.
+    */
+    private function exportRegularReconciliation(
+        string $cabang,
+        $period,
+        string $startDate,
+        string $endDate
+    ) {
+        try {
+            ini_set('memory_limit', '1024M');
+            /*
+            |--------------------------------------------------------------------------
+            | 1. DAFTAR REKENING REGULER
+            |--------------------------------------------------------------------------
+            */
+
+            $rekeningList = DB::table('bank')
+                ->where('cabang', $cabang)
+                ->where('site', 'REG')
+                ->whereRaw('UPPER(TRIM(bank)) <> ?', ['TITIPAN'])
+                ->whereNotNull('no_rek')
+                ->where('no_rek', '<>', '')
+                ->orderBy('akun')
+                ->get([
+                    'no_rek',
+                    'bank',
+                    'akun',
+                    'jns_bank',
+                ]);
+
+            if ($rekeningList->isEmpty()) {
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        "Tidak ditemukan rekening Reguler non-Titipan untuk cabang {$cabang}.",
+                ], 404);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 2. PERIODE AKTIF DAN RENTANG AGING
+            |--------------------------------------------------------------------------
+            */
+
+            $periodStart = \Carbon\Carbon::parse($startDate)->startOfDay();
+            $periodEnd = \Carbon\Carbon::parse($endDate)->startOfDay();
+
+            if ($periodStart->gt($periodEnd)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tanggal awal periode melebihi tanggal akhir periode.',
+                ], 422);
+            }
+
+            $agingRanges = [
+                [
+                    'label' => '01-08',
+                    'start' => $periodStart->copy()->startOfMonth(),
+                    'end' => $periodStart->copy()->startOfMonth()->addDays(7),
+                ],
+                [
+                    'label' => '09-16',
+                    'start' => $periodStart->copy()->startOfMonth()->addDays(8),
+                    'end' => $periodStart->copy()->startOfMonth()->addDays(15),
+                ],
+                [
+                    'label' => '17-24',
+                    'start' => $periodStart->copy()->startOfMonth()->addDays(16),
+                    'end' => $periodStart->copy()->startOfMonth()->addDays(23),
+                ],
+                [
+                    'label' => '25-' . $periodEnd->format('d'),
+                    'start' => $periodStart->copy()->startOfMonth()->addDays(24),
+                    'end' => $periodEnd->copy(),
+                ],
+            ];
+
+            foreach ($agingRanges as &$range) {
+                if ($range['start']->lt($periodStart)) {
+                    $range['start'] = $periodStart->copy();
+                }
+
+                if ($range['end']->gt($periodEnd)) {
+                    $range['end'] = $periodEnd->copy();
+                }
+            }
+            unset($range);
+
+            /*
+            |--------------------------------------------------------------------------
+            | 3. BUAT WORKBOOK DAN REPORT
+            |--------------------------------------------------------------------------
+            */
+
+            $spreadsheet = new Spreadsheet();
+            $report = $spreadsheet->getActiveSheet();
+            $report->setTitle('REPORT');
+
+            $this->buildRegularReportSheet(
+                $report,
+                $cabang,
+                $period,
+                $rekeningList,
+                $agingRanges,
+                $periodStart,
+                $periodEnd
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | SHEET RECEIPT UNMATCH
+            |--------------------------------------------------------------------------
+            | Diletakkan setelah REPORT dan sebelum detail rekening.
+            */
+
+            $receiptSheet = $spreadsheet->createSheet();
+            $receiptSheet->setTitle(
+                $this->makeSheetName('Receipt Unmatch', $spreadsheet)
+            );
+
+            $receiptSheet->setShowGridlines(false);
+
+            // Warna tab khusus receipt unmatch: merah.
+            $receiptSheet->getTabColor()->setRGB('FF0000');
+
+            $this->buildRegularReceiptUnmatchSheet(
+                $receiptSheet,
+                $cabang,
+                $startDate,
+                $endDate
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | BUAT SHEET PER REKENING
+            |--------------------------------------------------------------------------
+            */
+
+            foreach ($rekeningList as $rekening) {
+                $sheetName = trim((string) $rekening->bank)
+                    . ' (' . trim((string) $rekening->akun) . ')';
+
+                $sheet = $spreadsheet->createSheet();
+                $sheet->setTitle(
+                    $this->makeSheetName($sheetName, $spreadsheet)
+                );
+
+                $this->buildRegularAccountSheet(
+                    $sheet,
+                    $cabang,
+                    $period,
+                    $startDate,
+                    $endDate,
+                    $rekening,
+                    $agingRanges
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 5. AKTIFKAN REPORT SEBAGAI SHEET PERTAMA
+            |--------------------------------------------------------------------------
+            */
+
+            $spreadsheet->setActiveSheetIndex(0);
+
+            /*
+            |--------------------------------------------------------------------------
+            | 6. NAMA FILE
+            |--------------------------------------------------------------------------
+            */
+
+            $periodeName = $period->periode
+                ?? ($startDate . '_' . $endDate);
+
+            $safeCabang = preg_replace('/[^A-Za-z0-9_-]/', '_', $cabang);
+            $safePeriode = preg_replace('/[^A-Za-z0-9_-]/', '_', $periodeName);
+
+            $filename =
+                "Rekonsiliasi_Reguler_{$safeCabang}_{$safePeriode}.xlsx";
+
+            /*
+            |--------------------------------------------------------------------------
+            | 7. DOWNLOAD EXCEL
+            |--------------------------------------------------------------------------
+            */
+
+            return response()->streamDownload(
+                function () use ($spreadsheet) {
+                    $writer = new Xlsx($spreadsheet);
+                    $writer->setPreCalculateFormulas(false);
+                    $writer->save('php://output');
+                },
+                $filename,
+                [
+                    'Content-Type' =>
+                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'Cache-Control' => 'max-age=0, must-revalidate',
+                    'Pragma' => 'public',
+                ]
+            );
+
+        } catch (\Throwable $e) {
+            Log::error('EXPORT REKONSILIASI REG ERROR', [
+                'cabang' => $cabang,
+                'period_id' => $period->id ?? null,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'File Excel Reguler gagal dibuat.',
+                'error' => config('app.debug')
+                    ? $e->getMessage()
+                    : 'Terjadi kesalahan pada server.',
+            ], 500);
+        }
+    }
+
+    private function getRegularBankTabColor(?string $bank): string
+    {
+        $bank = strtoupper(trim((string) $bank));
+
+        $colors = [
+            'BCA'           => '00B050', // Hijau
+            'MANDIRI'       => 'FFC000', // Kuning
+            'BRI'           => '4472C4', // Biru
+            'BNI'           => 'ED7D31', // Oranye
+            'BSI'           => '7030A0', // Ungu
+            'CIMB NIAGA'    => 'FF0000', // Merah
+            'INA PERDANA'   => '00B0F0', // Biru muda
+            'BTN'           => 'A5A5A5', // Abu-abu
+        ];
+
+        foreach ($colors as $name => $color) {
+            if (str_contains($bank, $name)) {
+                return $color;
+            }
+        }
+
+        return '808080'; // Warna default
+    }
+
+    private function buildRegularReportSheet(
+        \PhpOffice\PhpSpreadsheet\Worksheet\Worksheet $report,
+        string $cabang,
+        $period,
+        $rekeningList,
+        array $agingRanges,
+        \Carbon\Carbon $periodStart,
+        \Carbon\Carbon $periodEnd
+    ): void {
+        $report->setShowGridlines(false);
+        $report->getTabColor()->setRGB('4472C4');
+
+        /* JUDUL DAN INFORMASI REPORT */
+        $report->mergeCells('A1:I1');
+        $report->setCellValue('A1', 'REPORT REKONSILIASI BANK REGULER');
+
+        $report->getStyle('A1:I1')->applyFromArray([
+            'font' => ['bold' => true, 'size' => 14],
+            'alignment' => [
+                'horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER,
+                'vertical' => \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER,
+            ],
+        ]);
+
+        $report->setCellValue('A3', 'Cabang : ' . $cabang);
+        $report->mergeCells('D3:F3');
+        $report->setCellValue('D3', 'Periode : ' . ($period->periode ?? ''));
+        $report->setCellValue(
+            'I3',
+            'Tanggal : ' . $periodStart->format('d M y')
+                . ' s/d ' . $periodEnd->format('d M y')
+        );
+
+        $report->getStyle('D3:F3')->getAlignment()->setHorizontal(
+            \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
+        );
+        $report->getStyle('I3')->getAlignment()->setHorizontal(
+            \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_RIGHT
+        );
+
+        /* HEADER REPORT */
+        $report->mergeCells('A5:A6');
+        $report->mergeCells('B5:B6');
+        $report->mergeCells('C5:C6');
+        $report->mergeCells('D5:G5');
+        $report->mergeCells('H5:H6');
+        $report->mergeCells('I5:I6');
+
+        $report->setCellValue('A5', 'No');
+        $report->setCellValue('B5', 'JENIS BANK');
+        $report->setCellValue('C5', 'NOMOR REKENING');
+        $report->setCellValue('D5', 'PENERIMAAN BELUM DIBUKUKAN');
+
+        foreach ($agingRanges as $index => $range) {
+            $report->setCellValue(
+                chr(ord('D') + $index) . '6',
+                $range['label']
+            );
+        }
+
+        $report->setCellValue('H5', "MUTASI\nOUTSTANDING");
+        $report->setCellValue('I5', 'KETERANGAN');
+
+        $report->getStyle('A5:I6')->applyFromArray([
+            'font' => [
+                'bold' => true,
+                'color' => ['rgb' => 'FFFFFF'],
+                'size' => 11,
+            ],
+            'fill' => [
+                'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                'startColor' => ['rgb' => '4472C4'],
+            ],
+            'alignment' => [
+                'horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER,
+                'vertical' => \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER,
+                'wrapText' => true,
+            ],
+            'borders' => [
+                'allBorders' => [
+                    'borderStyle' => \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN,
+                    'color' => ['rgb' => '000000'],
+                ],
+            ],
+        ]);
+
+        /* DATA AGING PER REKENING */
+        $firstDataRow = 7;
+        $reportRow = $firstDataRow;
+
+        foreach ($rekeningList as $index => $rekening) {
+            $noRek = trim((string) $rekening->no_rek);
+            $jnsBank = trim((string) $rekening->jns_bank);
+
+            $agingCounts = [];
+            foreach ($agingRanges as $range) {
+                $agingCounts[] = (int) $this->countRegularOutstanding(
+                    $cabang,
+                    $noRek,
+                    $range
+                );
+            }
+
+            $report->setCellValue("A{$reportRow}", $index + 1);
+            $report->setCellValue("B{$reportRow}", $jnsBank);
+            $report->setCellValueExplicit(
+                "C{$reportRow}",
+                $noRek,
+                \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+            );
+
+            foreach (['D', 'E', 'F', 'G'] as $i => $column) {
+                $report->setCellValueExplicit(
+                    "{$column}{$reportRow}",
+                    (int) ($agingCounts[$i] ?? 0),
+                    \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_NUMERIC
+                );
+            }
+
+            $report->setCellValue("H{$reportRow}", "=SUM(D{$reportRow}:G{$reportRow})");
+            $report->setCellValue(
+                "I{$reportRow}",
+                "=IF(H{$reportRow}>0,\"Cabang Belum Pengajuan\",\"Clear\")"
+            );
+
+            $reportRow++;
+        }
+
+        $lastDataRow = $reportRow - 1;
+        $totalRow = $reportRow;
+
+        $report->mergeCells("A{$totalRow}:C{$totalRow}");
+        $report->setCellValue("A{$totalRow}", 'TOTAL');
+
+        foreach (['D', 'E', 'F', 'G', 'H'] as $column) {
+            $formula = $lastDataRow >= $firstDataRow
+                ? "=SUM({$column}{$firstDataRow}:{$column}{$lastDataRow})"
+                : '=0';
+            $report->setCellValue("{$column}{$totalRow}", $formula);
+        }
+
+        /* FORMAT ANGKA, BORDER, DAN TOTAL */
+        $report->getStyle("A5:I{$totalRow}")
+            ->getBorders()->getAllBorders()
+            ->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN);
+
+        $report->getStyle("A{$firstDataRow}:A{$lastDataRow}")
+            ->getAlignment()->setHorizontal(
+                \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
+            );
+
+        if ($lastDataRow >= $firstDataRow) {
+            $report->getStyle("C{$firstDataRow}:C{$lastDataRow}")
+                ->getNumberFormat()->setFormatCode('@');
+
+            $report->getStyle("C{$firstDataRow}:H{$lastDataRow}")
+                ->getAlignment()->setHorizontal(
+                    \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
+                );
+
+            $report->getStyle("H{$firstDataRow}:H{$lastDataRow}")
+                ->getFont()->getColor()->setRGB('FF0000');
+        }
+
+        $report->getStyle("D{$firstDataRow}:H{$totalRow}")
+            ->getNumberFormat()->setFormatCode('#,##0;[Red]-#,##0;0;@');
+
+        $report->getStyle("A{$totalRow}:I{$totalRow}")->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+            'fill' => [
+                'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                'startColor' => ['rgb' => '4472C4'],
+            ],
+            'alignment' => [
+                'horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER,
+                'vertical' => \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER,
+            ],
+        ]);
+
+        $report->getRowDimension(1)->setRowHeight(25);
+        $report->getColumnDimension('A')->setWidth(10);
+        $report->getColumnDimension('B')->setWidth(25);
+        $report->getColumnDimension('C')->setWidth(22);
+        $report->getColumnDimension('H')->setWidth(20);
+        $report->getColumnDimension('I')->setWidth(30);
+        $report->freezePane('A7');
+    }
+        
+    private function buildRegularReceiptUnmatchSheet(
+        \PhpOffice\PhpSpreadsheet\Worksheet\Worksheet $sheet,
+        string $cabang,
+        string $startDate,
+        string $endDate
+    ): void {
+        $sheet->setShowGridlines(false);
+        $sheet->getTabColor()->setRGB('FF0000');
+
+        /*
+        |--------------------------------------------------------------------------
+        | HEADER
+        |--------------------------------------------------------------------------
+        */
+
+        $headers = [
+            'A1' => 'No',
+            'B1' => 'Bank',
+            'C1' => 'No Rekening',
+            'D1' => 'Site',
+            'E1' => 'Receipt Number',
+            'F1' => 'Receipt Date',
+            'G1' => 'Receipt Amount',
+            'H1' => 'Comments',
+            'I1' => 'Paid By',
+            'J1' => 'Status',
+            'K1' => 'Activity',
+            'L1' => 'Note',
+        ];
+
+        foreach ($headers as $cell => $value) {
+            $sheet->setCellValue($cell, $value);
+        }
+
+        $headerStyle = [
+            'font' => [
+                'bold' => true,
+                'color' => ['rgb' => 'FFFFFF'],
+                'size' => 10,
+            ],
+            'fill' => [
+                'fillType' =>
+                    \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                'startColor' => ['rgb' => '4472C4'],
+            ],
+            'alignment' => [
+                'horizontal' =>
+                    \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER,
+                'vertical' =>
+                    \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER,
+                'wrapText' => true,
+            ],
+            'borders' => [
+                'allBorders' => [
+                    'borderStyle' =>
+                        \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN,
+                    'color' => ['rgb' => '000000'],
+                ],
+            ],
+        ];
+
+        $sheet->getStyle('A1:L1')->applyFromArray($headerStyle);
+        $sheet->getRowDimension(1)->setRowHeight(32);
+
+        /*
+        |--------------------------------------------------------------------------
+        | AMBIL RECEIPT REGULER YANG BELUM MATCH
+        |--------------------------------------------------------------------------
+        | EXISTS digunakan agar receipt tidak berlipat jika tabel bank
+        | memiliki lebih dari satu baris untuk nomor rekening yang sama.
+        */
+
+        $receipts = DB::table('receipt as r')
+            ->whereBetween('r.receipt_date', [$startDate, $endDate])
+            ->where(function ($query) {
+                $query->whereNull('r.reff')
+                    ->orWhereRaw("TRIM(r.reff) = ''");
+            })
+            ->whereExists(function ($query) use ($cabang) {
+                $query->selectRaw('1')
+                    ->from('bank as b')
+                    ->whereColumn(
+                        'b.no_rek',
+                        'r.remittance_bank_account'
+                    )
+                    ->where('b.cabang', $cabang)
+                    ->where('b.site', 'REG')
+                    ->whereNotNull('b.no_rek')
+                    ->where('b.no_rek', '<>', '')
+                    ->whereRaw(
+                        'UPPER(TRIM(b.bank)) <> ?',
+                        ['TITIPAN']
+                    );
+            })
+            ->orderBy('r.receipt_date')
+            ->orderBy('r.id')
+            ->get([
+                'r.id',
+                'r.remittance_bank_account',
+                'r.receipt_number',
+                'r.receipt_date',
+                'r.receipt_amount',
+                'r.comments',
+                'r.paid_by',
+                'r.receipt_status',
+                'r.activity',
+                'r.note',
+            ]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | AMBIL INFORMASI BANK SEKALIGUS
+        |--------------------------------------------------------------------------
+        | Menghindari query bank berulang untuk setiap receipt.
+        */
+
+        $bankAccounts = $receipts
+            ->pluck('remittance_bank_account')
+            ->filter(fn ($account) => $account !== null && $account !== '')
+            ->unique()
+            ->values()
+            ->all();
+
+        $bankInfoMap = [];
+
+        if (!empty($bankAccounts)) {
+            $bankInfos = DB::table('bank')
+                ->where('cabang', $cabang)
+                ->where('site', 'REG')
+                ->whereIn('no_rek', $bankAccounts)
+                ->whereNotNull('no_rek')
+                ->where('no_rek', '<>', '')
+                ->whereRaw(
+                    'UPPER(TRIM(bank)) <> ?',
+                    ['TITIPAN']
+                )
+                ->get([
+                    'no_rek',
+                    'bank',
+                    'site',
+                ]);
+
+            foreach ($bankInfos as $info) {
+                $accountKey = (string) $info->no_rek;
+
+                if (!isset($bankInfoMap[$accountKey])) {
+                    $bankInfoMap[$accountKey] = $info;
+                }
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | TULIS DATA
+        |--------------------------------------------------------------------------
+        */
+
+        $row = 2;
+
+        foreach ($receipts as $receipt) {
+            $accountKey = (string) $receipt->remittance_bank_account;
+            $bankInfo = $bankInfoMap[$accountKey] ?? null;
+
+            $sheet->setCellValue('A' . $row, $row - 1);
+
+            $sheet->setCellValue(
+                'B' . $row,
+                $bankInfo->bank ?? ''
+            );
+
+            $sheet->setCellValueExplicit(
+                'C' . $row,
+                $accountKey,
+                \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+            );
+
+            $sheet->setCellValue(
+                'D' . $row,
+                $bankInfo->site ?? ''
+            );
+
+            $sheet->setCellValue(
+                'E' . $row,
+                $receipt->receipt_number
+            );
+
+            $this->writeExcelDateCell(
+                $sheet,
+                'F' . $row,
+                $receipt->receipt_date
+            );
+
+            $sheet->setCellValue(
+                'G' . $row,
+                (float) $receipt->receipt_amount
+            );
+
+            $sheet->setCellValue(
+                'H' . $row,
+                $receipt->comments
+            );
+
+            $sheet->setCellValue(
+                'I' . $row,
+                $receipt->paid_by
+            );
+
+            // Status diambil dari field receipt_status.
+            $sheet->setCellValue(
+                'J' . $row,
+                $receipt->receipt_status
+            );
+
+            // Activity bergeser ke kolom K.
+            $sheet->setCellValue(
+                'K' . $row,
+                $receipt->activity
+            );
+
+            // Note bergeser ke kolom L.
+            $sheet->setCellValue(
+                'L' . $row,
+                $receipt->note ?? ''
+            );
+
+            $row++;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | FORMAT TABEL
+        |--------------------------------------------------------------------------
+        */
+
+        $lastRow = max(1, $row - 1);
+
+        $sheet->getStyle("A1:L{$lastRow}")
+            ->getBorders()
+            ->getAllBorders()
+            ->setBorderStyle(
+                \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN
+            );
+
+        if ($lastRow >= 2) {
+            // Nomor rekening sebagai teks agar angka nol di depan tidak hilang.
+            $sheet->getStyle("C2:C{$lastRow}")
+                ->getNumberFormat()
+                ->setFormatCode('@');
+
+            // Format tanggal receipt.
+            $sheet->getStyle("F2:F{$lastRow}")
+                ->getNumberFormat()
+                ->setFormatCode('dd-mmm-yy');
+
+            // Format nominal receipt.
+            $sheet->getStyle("G2:G{$lastRow}")
+                ->getNumberFormat()
+                ->setFormatCode('#,##0;[Red]\(#,##0);0');
+
+            // Nomor urut rata tengah.
+            $sheet->getStyle("A2:A{$lastRow}")
+                ->getAlignment()
+                ->setHorizontal(
+                    \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
+                );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | LEBAR KOLOM
+        |--------------------------------------------------------------------------
+        */
+
+        $widths = [
+            'A' => 8,
+            'B' => 20,
+            'C' => 22,
+            'D' => 12,
+            'E' => 28,
+            'F' => 15,
+            'G' => 20,
+            'H' => 45,
+            'I' => 20,
+            'J' => 18,
+            'K' => 30,
+            'L' => 35,
+        ];
+
+        foreach ($widths as $column => $width) {
+            $sheet->getColumnDimension($column)->setWidth($width);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | ALIGNMENT, FREEZE PANE, DAN FILTER
+        |--------------------------------------------------------------------------
+        */
+
+        $sheet->getStyle("A1:L{$lastRow}")
+            ->getAlignment()
+            ->setVertical(
+                \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_TOP
+            );
+
+        // Pastikan header tetap rata tengah secara horizontal dan vertikal.
+        $sheet->getStyle('A1:L1')
+            ->getAlignment()
+            ->setHorizontal(
+                \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
+            );
+
+        $sheet->getStyle('A1:L1')
+            ->getAlignment()
+            ->setVertical(
+                \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER
+            );
+
+        $sheet->freezePane('A2');
+        $sheet->setAutoFilter("A1:L{$lastRow}");
+    }
+
+    private function buildRegularAccountSheet(
+        \PhpOffice\PhpSpreadsheet\Worksheet\Worksheet $sheet,
+        string $cabang,
+        $period,
+        string $startDate,
+        string $endDate,
+        $rekening,
+        array $agingRanges
+    ): void {
+        $noRek = trim((string) $rekening->no_rek);
+    
+        $sheet->setShowGridlines(false);
+        $sheet->getTabColor()->setRGB(
+            $this->getRegularBankTabColor(
+                (string) ($rekening->bank ?? '')
+            )
+        );
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 1. HEADER
+        |--------------------------------------------------------------------------
+        */
+    
+        $isMandiri = stripos(trim((string) ($rekening->bank ?? '')), 'MANDIRI') !== false;
+    
+        // Untuk Mandiri, kolom C dan D memuat remark dan remark1.
+        // Kredit/REFF bergeser dua kolom ke kanan; sisi receipt dan hasil juga bergeser.
+        if ($isMandiri) {
+            $headers = [
+                'A1' => 'No Rek',
+                'B1' => 'Tanggal',
+                'C1' => 'Keterangan',
+                'D1' => 'Keterangan 2',
+                'E1' => 'Kredit',
+                'F1' => 'REFF',
+                'H1' => 'Comments',
+                'I1' => 'Paid By',
+                'J1' => 'Activity',
+                'K1' => 'Receipt Number',
+                'L1' => 'Receipt Date',
+                'M1' => 'Receipt Amount',
+                'N1' => 'Selisih',
+                'O1' => 'Keterangan',
+            ];
+        } else {
+            $headers = [
+                'A1' => 'No Rek',
+                'B1' => 'Tanggal',
+                'C1' => 'Keterangan',
+                'D1' => 'Kredit',
+                'E1' => 'REFF',
+                'G1' => 'Comments',
+                'H1' => 'Paid By',
+                'I1' => 'Activity',
+                'J1' => 'Receipt Number',
+                'K1' => 'Receipt Date',
+                'L1' => 'Receipt Amount',
+                'M1' => 'Selisih',
+                'N1' => 'Keterangan',
+            ];
+        }
+    
+        foreach ($headers as $cell => $value) {
+            $sheet->setCellValue($cell, $value);
+        }
+    
+        $mutasiHeaderStyle = [
+            'font' => [
+                'bold' => true,
+                'color' => ['rgb' => 'FFFFFF'],
+                'size' => 10,
+            ],
+            'fill' => [
+                'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                'startColor' => ['rgb' => '4472C4'],
+            ],
+            'alignment' => [
+                'horizontal' => \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER,
+                'vertical' => \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_CENTER,
+                'wrapText' => true,
+            ],
+            'borders' => [
+                'allBorders' => [
+                    'borderStyle' => \PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN,
+                    'color' => ['rgb' => '000000'],
+                ],
+            ],
+        ];
+    
+        $receiptHeaderStyle = $mutasiHeaderStyle;
+        $receiptHeaderStyle['fill']['startColor']['rgb'] = '548235';
+    
+        $resultHeaderStyle = $mutasiHeaderStyle;
+        $resultHeaderStyle['fill']['startColor']['rgb'] = 'C65911';
+    
+        if ($isMandiri) {
+            $sheet->getStyle('A1:F1')->applyFromArray($mutasiHeaderStyle);
+            $sheet->getStyle('H1:M1')->applyFromArray($receiptHeaderStyle);
+            $sheet->getStyle('N1:O1')->applyFromArray($resultHeaderStyle);
+        } else {
+            $sheet->getStyle('A1:E1')->applyFromArray($mutasiHeaderStyle);
+            $sheet->getStyle('G1:L1')->applyFromArray($receiptHeaderStyle);
+            $sheet->getStyle('M1:N1')->applyFromArray($resultHeaderStyle);
+        }
+        $sheet->getRowDimension(1)->setRowHeight(32);
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 2. AMBIL DATA MUTASI DAN RECEIPT
+        |--------------------------------------------------------------------------
+        | Transaksi virtual dikecualikan jika REFF mengandung VIR.
+        | Receipt diambil semua status agar data ber-REFF yang sama dapat
+        | dikelompokkan sebagai match. Untuk kategori receipt REFF kosong,
+        | status REVERSED akan dikecualikan di tahap pemilahan.
+        |--------------------------------------------------------------------------
+        */
+    
+        $mutasiRows = DB::table('mutasi_detail')
+            ->where('cabang', $cabang)
+            ->where('no_rek', $noRek)
+            ->whereBetween('tgl', [$startDate, $endDate])
+            ->where('cr', '<>', 0)
+            ->where(function ($query) {
+                $query->whereNull('reff')
+                    ->orWhereRaw("UPPER(reff) NOT LIKE ?", ['%VIR%']);
+            })
+            ->orderBy('tgl')
+            ->orderBy('id')
+            ->get([
+                'id',
+                'no_rek',
+                'tgl',
+                'remark',
+                'remark1',
+                'cr',
+                'reff',
+            ]);
+    
+        $receiptRows = DB::table('receipt')
+            ->where('remittance_bank_account', $noRek)
+            ->whereBetween('receipt_date', [$startDate, $endDate])
+            ->where(function ($query) {
+                $query->whereNull('reff')
+                    ->orWhereRaw("UPPER(reff) NOT LIKE ?", ['%VIR%']);
+            })
+            ->orderBy('receipt_date')
+            ->orderBy('id')
+            ->get([
+                'id',
+                'remittance_bank_account',
+                'receipt_number',
+                'receipt_date',
+                'receipt_amount',
+                'comments',
+                'paid_by',
+                'activity',
+                'reff',
+                'receipt_status',
+                'note',
+            ]);
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 3. KELOMPOKKAN BERDASARKAN REFF
+        |--------------------------------------------------------------------------
+        */
+    
+        $mutasiByReff = [];
+        $receiptByReff = [];
+        $mutasiEmpty = [];
+        $receiptEmpty = [];
+    
+        foreach ($mutasiRows as $mutasi) {
+            $reff = trim((string) ($mutasi->reff ?? ''));
+    
+            if ($reff === '') {
+                $mutasiEmpty[] = $mutasi;
+                continue;
+            }
+    
+            $mutasiByReff[$reff][] = $mutasi;
+        }
+    
+        foreach ($receiptRows as $receipt) {
+            $reff = trim((string) ($receipt->reff ?? ''));
+    
+            if ($reff === '') {
+                // Receipt REFF kosong ditampilkan kecuali status REVERSED.
+                if (strtolower(trim((string) ($receipt->receipt_status ?? ''))) !== 'reversed') {
+                    $receiptEmpty[] = $receipt;
+                }
+                continue;
+            }
+    
+            $receiptByReff[$reff][] = $receipt;
+        }
+    
+        unset($mutasiRows, $receiptRows);
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 4. SUSUN KATEGORI
+        |--------------------------------------------------------------------------
+        | Kategori 1: match, REFF ada pada mutasi dan receipt.
+        | Kategori 2: receipt REFF kosong dan bukan REVERSED.
+        | Kategori 3: mutasi REFF kosong.
+        |--------------------------------------------------------------------------
+        */
+    
+        $matchGroups = [];
+        $matchedReff = [];
+    
+        // Urutan REFF mengikuti urutan kemunculan pada data mutasi.
+        foreach ($mutasiByReff as $reff => $mutasiGroup) {
+            if (!isset($receiptByReff[$reff])) {
+                continue;
+            }
+    
+            $receiptGroup = $receiptByReff[$reff];
+            $matchedReff[$reff] = true;
+    
+            $matchGroups[] = [
+                'reff' => $reff,
+                'mutasi' => $mutasiGroup,
+                'receipt' => $receiptGroup,
+            ];
+        }
+    
+        // Bersihkan kelompok ber-REFF yang tidak mempunyai pasangan.
+        // Sesuai tiga kategori yang diminta, hanya pasangan dengan REFF sama
+        // yang masuk kategori match.
+        unset($mutasiByReff, $receiptByReff, $matchedReff);
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 5. FUNGSI INTERNAL UNTUK MENULIS BARIS
+        |--------------------------------------------------------------------------
+        */
+    
+        $row = 2;
+    
+        $columns = $isMandiri
+            ? [
+                'mutasi_account' => 'A', 'mutasi_date' => 'B',
+                'mutasi_remark' => 'C', 'mutasi_remark1' => 'D',
+                'mutasi_amount' => 'E', 'mutasi_reff' => 'F',
+                'separator' => 'G',
+                'receipt_comments' => 'H', 'receipt_paid_by' => 'I',
+                'receipt_activity' => 'J', 'receipt_number' => 'K',
+                'receipt_date' => 'L', 'receipt_amount' => 'M',
+                'difference' => 'N', 'note' => 'O',
+            ]
+            : [
+                'mutasi_account' => 'A', 'mutasi_date' => 'B',
+                'mutasi_remark' => 'C', 'mutasi_remark1' => null,
+                'mutasi_amount' => 'D', 'mutasi_reff' => 'E',
+                'separator' => 'F',
+                'receipt_comments' => 'G', 'receipt_paid_by' => 'H',
+                'receipt_activity' => 'I', 'receipt_number' => 'J',
+                'receipt_date' => 'K', 'receipt_amount' => 'L',
+                'difference' => 'M', 'note' => 'N',
+            ];
+    
+        $writeMatchedRows = function (array $mutasiGroup, array $receiptGroup) use ($sheet, &$row, $columns, $isMandiri): void {
+            $maxRows = max(count($mutasiGroup), count($receiptGroup));
+    
+            for ($i = 0; $i < $maxRows; $i++) {
+                $mutasi = $mutasiGroup[$i] ?? null;
+                $receipt = $receiptGroup[$i] ?? null;
+    
+                if ($mutasi) {
+                    $sheet->setCellValueExplicit($columns['mutasi_account'] . $row, (string) $mutasi->no_rek, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+                    $this->writeExcelDateCell($sheet, $columns['mutasi_date'] . $row, $mutasi->tgl);
+                    $sheet->setCellValue($columns['mutasi_remark'] . $row, $mutasi->remark);
+                    if ($isMandiri) {
+                        $sheet->setCellValue($columns['mutasi_remark1'] . $row, $mutasi->remark1 ?? '');
+                    }
+                    $sheet->setCellValue($columns['mutasi_amount'] . $row, (float) $mutasi->cr);
+                    $sheet->setCellValue($columns['mutasi_reff'] . $row, $mutasi->reff);
+                
+                } else {
+                    // Data MATCH: jika data mutasi kosong, isi X pada kolom mutasi.
+                    $mutasiColumns = $isMandiri
+                        ? ['A', 'B', 'C', 'D', 'E', 'F']
+                        : ['A', 'B', 'C', 'D', 'E'];
+
+                    foreach ($mutasiColumns as $column) {
+                        $sheet->setCellValue($column . $row, 'X');
+                    }
+                }
+
+    
+                $sheet->setCellValue($columns['separator'] . $row, '');
+    
+                if ($receipt) {
+                    $sheet->setCellValue($columns['receipt_comments'] . $row, $receipt->comments);
+                    $sheet->setCellValue($columns['receipt_paid_by'] . $row, $receipt->paid_by);
+                    $sheet->setCellValue($columns['receipt_activity'] . $row, $receipt->activity);
+                    $sheet->setCellValue($columns['receipt_number'] . $row, $receipt->receipt_number);
+                    $this->writeExcelDateCell($sheet, $columns['receipt_date'] . $row, $receipt->receipt_date);
+                    $sheet->setCellValue($columns['receipt_amount'] . $row, (float) $receipt->receipt_amount);
+                } else {
+                    // Data MATCH: jika receipt kosong, isi X pada kolom receipt
+                    // sampai Receipt Date. Receipt Amount tetap kosong.
+                    foreach ([
+                        $columns['receipt_comments'],
+                        $columns['receipt_paid_by'],
+                        $columns['receipt_activity'],
+                        $columns['receipt_number'],
+                        $columns['receipt_date'],
+                    ] as $column) {
+                        $sheet->setCellValue($column . $row, 'X');
+                    }
+                
+                    $sheet->setCellValue(
+                        $columns['receipt_amount'] . $row,
+                        null
+                    );
+                }
+    
+                $sheet->setCellValue(
+                    $columns['difference'] . $row,
+                    '=N(' . $columns['mutasi_amount'] . $row . ')-N(' . $columns['receipt_amount'] . $row . ')'
+                );
+                $sheet->setCellValue($columns['note'] . $row, '');
+                $row++;
+            }
+        };
+    
+        $writeReceiptEmptyRow = function (object $receipt) use ($sheet, &$row, $columns, $isMandiri): void {
+            // Receipt belum match: sisi mutasi dikosongkan.
+            $mutasiColumns = $isMandiri ? ['A', 'B', 'C', 'D', 'E', 'F'] : ['A', 'B', 'C', 'D', 'E'];
+            foreach ($mutasiColumns as $column) {
+                $sheet->setCellValue($column . $row, null);
+            }
+            $sheet->setCellValue($columns['separator'] . $row, '');
+    
+            $sheet->setCellValue($columns['receipt_comments'] . $row, $receipt->comments);
+            $sheet->setCellValue($columns['receipt_paid_by'] . $row, $receipt->paid_by);
+            $sheet->setCellValue($columns['receipt_activity'] . $row, $receipt->activity);
+            $sheet->setCellValue($columns['receipt_number'] . $row, $receipt->receipt_number);
+            $this->writeExcelDateCell($sheet, $columns['receipt_date'] . $row, $receipt->receipt_date);
+            $sheet->setCellValue($columns['receipt_amount'] . $row, (float) $receipt->receipt_amount);
+            $sheet->setCellValue($columns['difference'] . $row, null);
+    
+            $note = trim((string) ($receipt->note ?? ''));
+            $sheet->setCellValue($columns['note'] . $row, $note !== '' ? $note : '');
+            $row++;
+        };
+    
+        $writeMutasiEmptyRow = function (object $mutasi) use ($sheet, &$row, $columns, $isMandiri): void {
+            $sheet->setCellValueExplicit($columns['mutasi_account'] . $row, (string) $mutasi->no_rek, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $this->writeExcelDateCell($sheet, $columns['mutasi_date'] . $row, $mutasi->tgl);
+            $sheet->setCellValue($columns['mutasi_remark'] . $row, $mutasi->remark);
+            if ($isMandiri) {
+                $sheet->setCellValue($columns['mutasi_remark1'] . $row, $mutasi->remark1 ?? '');
+            }
+            $sheet->setCellValue($columns['mutasi_amount'] . $row, (float) $mutasi->cr);
+            $sheet->setCellValue($columns['mutasi_reff'] . $row, $mutasi->reff);
+            $sheet->setCellValue($columns['separator'] . $row, '');
+    
+            // Mutasi belum match: sisi receipt dikosongkan.
+            foreach ([
+                $columns['receipt_comments'], $columns['receipt_paid_by'],
+                $columns['receipt_activity'], $columns['receipt_number'],
+                $columns['receipt_date'], $columns['receipt_amount'],
+            ] as $column) {
+                $sheet->setCellValue($column . $row, null);
+            }
+            $sheet->setCellValue($columns['difference'] . $row, null);
+            $sheet->setCellValue($columns['note'] . $row, '');
+            $row++;
+        };
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 6. KATEGORI 1 — MATCH DI BAGIAN PALING ATAS
+        |--------------------------------------------------------------------------
+        */
+    
+        foreach ($matchGroups as $group) {
+            $writeMatchedRows($group['mutasi'], $group['receipt']);
+        }
+    
+        /*
+        |--------------------------------------------------------------------------
+        | PEMISAH 3 BARIS ANTAR KATEGORI
+        |--------------------------------------------------------------------------
+        | Baris kedua dari tiga baris pemisah diberi warna hijau.
+        |--------------------------------------------------------------------------
+        */
+    
+        $addCategorySeparator = function () use ($sheet, &$row): void {
+            $separatorStart = $row;
+    
+            for ($i = 0; $i < 3; $i++) {
+                for ($col = 1; $col <= 14; $col++) {
+                    $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($col);
+                    $sheet->setCellValue("{$columnLetter}{$row}", null);
+                }
+                $row++;
+            }
+    
+            $greenRow = $separatorStart + 1;
+            $sheet->getStyle("A{$greenRow}:N{$greenRow}")->applyFromArray([
+                'fill' => [
+                    'fillType' => \PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID,
+                    'startColor' => ['rgb' => 'C6E0B4'],
+                ],
+            ]);
+        };
+    
+        if (count($matchGroups) > 0 && (count($receiptEmpty) > 0 || count($mutasiEmpty) > 0)) {
+            $addCategorySeparator();
+        }
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 7. KATEGORI 2 — RECEIPT REFF KOSONG, STATUS BUKAN REVERSED
+        |--------------------------------------------------------------------------
+        */
+    
+        foreach ($receiptEmpty as $receipt) {
+            $writeReceiptEmptyRow($receipt);
+        }
+    
+        if (count($receiptEmpty) > 0 && count($mutasiEmpty) > 0) {
+            $addCategorySeparator();
+        }
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 8. KATEGORI 3 — MUTASI REFF KOSONG
+        |--------------------------------------------------------------------------
+        */
+    
+        foreach ($mutasiEmpty as $mutasi) {
+            $writeMutasiEmptyRow($mutasi);
+        }
+    
+        unset($matchGroups, $receiptEmpty, $mutasiEmpty, $writeMatchedRows, $writeReceiptEmptyRow, $writeMutasiEmptyRow);
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 9. FORMAT TABEL, ANGKA, TANGGAL, DAN CETAK
+        |--------------------------------------------------------------------------
+        */
+    
+        $lastRow = max(1, $row - 1);
+        $lastColumn = $isMandiri ? 'O' : 'N';
+    
+        $sheet->getStyle("A1:{$lastColumn}{$lastRow}")
+            ->getBorders()
+            ->getAllBorders()
+            ->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN);
+    
+        if ($lastRow >= 2) {
+            $sheet->getStyle($columns['mutasi_amount'] . "2:" . $columns['mutasi_amount'] . $lastRow)
+                ->getNumberFormat()
+                ->setFormatCode('#,##0;[Red](#,##0);0');
+    
+            $sheet->getStyle($columns['receipt_amount'] . "2:" . $columns['receipt_amount'] . $lastRow)
+                ->getNumberFormat()
+                ->setFormatCode('#,##0;[Red](#,##0);0');
+    
+            $sheet->getStyle($columns['difference'] . "2:" . $columns['difference'] . $lastRow)
+                ->getNumberFormat()
+                ->setFormatCode('#,##0;[Red](#,##0);0');
+    
+            $sheet->getStyle("A2:{$lastColumn}{$lastRow}")
+                ->getAlignment()
+                ->setVertical(\PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_TOP);
+    
+            $sheet->getStyle("A1:{$lastColumn}{$lastRow}")
+                ->getAlignment()
+                ->setWrapText(false);
+    
+            $sheet->getStyle($columns['mutasi_date'] . "2:" . $columns['mutasi_date'] . $lastRow)
+                ->getNumberFormat()
+                ->setFormatCode('dd-mmm-yy');
+    
+            $sheet->getStyle($columns['receipt_date'] . "2:" . $columns['receipt_date'] . $lastRow)
+                ->getNumberFormat()
+                ->setFormatCode('dd-mmm-yy');
+        }
+    
+        $widths = $isMandiri
+            ? [
+                'A' => 18, 'B' => 13, 'C' => 45, 'D' => 45,
+                'E' => 18, 'F' => 18, 'G' => 3, 'H' => 45,
+                'I' => 13, 'J' => 30, 'K' => 28, 'L' => 14,
+                'M' => 20, 'N' => 18, 'O' => 30,
+            ]
+            : [
+                'A' => 18, 'B' => 13, 'C' => 55, 'D' => 18,
+                'E' => 18, 'F' => 3, 'G' => 55, 'H' => 13,
+                'I' => 30, 'J' => 28, 'K' => 14, 'L' => 20,
+                'M' => 18, 'N' => 30,
+            ];
+    
+        foreach ($widths as $column => $width) {
+            $sheet->getColumnDimension($column)->setWidth($width);
+        }
+    
+        $sheet->getRowDimension(1)->setRowHeight(32);
+        $sheet->freezePane('A2');
+    
+        $sheet->getPageSetup()
+            ->setOrientation(\PhpOffice\PhpSpreadsheet\Worksheet\PageSetup::ORIENTATION_LANDSCAPE);
+    
+        $sheet->getPageSetup()
+            ->setPaperSize(\PhpOffice\PhpSpreadsheet\Worksheet\PageSetup::PAPERSIZE_A4);
+    
+        $sheet->getPageSetup()->setFitToWidth(1);
+        $sheet->getPageSetup()->setFitToHeight(0);
+    
+        $sheet->getPageMargins()->setTop(0.25);
+        $sheet->getPageMargins()->setBottom(0.25);
+        $sheet->getPageMargins()->setLeft(0.25);
+        $sheet->getPageMargins()->setRight(0.25);
+    
+        $sheet->getPageSetup()->setPrintArea("A1:{$lastColumn}{$lastRow}");
+    
+    }
+    
+    /**
+     * Menulis tanggal sebagai serial date Excel agar number format
+     * dd-mmm-yy berfungsi meskipun nilai dari database berupa string Y-m-d.
+     */
+    private function writeExcelDateCell(
+        \PhpOffice\PhpSpreadsheet\Worksheet\Worksheet $sheet,
+        string $cell,
+        $value
+    ): void {
+        if ($value === null || trim((string) $value) === '') {
+            $sheet->setCellValue($cell, null);
+            return;
+        }
+    
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $excelDate = \PhpOffice\PhpSpreadsheet\Shared\Date::PHPToExcel($date);
+            $sheet->setCellValue($cell, $excelDate);
+            $sheet->getStyle($cell)
+                ->getNumberFormat()
+                ->setFormatCode('dd-mmm-yy');
+        } catch (\Throwable $e) {
+            // Fallback bila nilai tanggal tidak valid agar data tidak hilang.
+            $sheet->setCellValue($cell, (string) $value);
+        }
+    }
+    
+    private function countRegularOutstanding(
+        string $cabang,
+        string $noRek,
+        array $range
+    ): int {
+        if ($range['start']->gt($range['end'])) {
+            return 0;
+        }
+
+        return (int) DB::table('mutasi_detail')
+            ->where('cabang', $cabang)
+            ->where('no_rek', $noRek)
+            ->where('cr', '<>', 0)
+            ->whereBetween('tgl', [
+                $range['start']->format('Y-m-d'),
+                $range['end']->format('Y-m-d'),
+            ])
+            ->where(function ($query) {
+                $query->whereNull('reff')
+                    ->orWhere('reff', '');
+            })
+            ->count();
     }
 
     private function buildFranchiseReportSheet(
@@ -2031,7 +3375,7 @@ class ReconciliationController extends Controller
         |--------------------------------------------------------------------------
         */
     
-        $sheet->mergeCells('A1:K1');
+        $sheet->mergeCells('A1:L1');
     
         $sheet->setCellValue(
             'A1',
@@ -2097,13 +3441,13 @@ class ReconciliationController extends Controller
         */
     
         $sheet
-            ->getStyle('A1:K1')
+            ->getStyle('A1:L1')
             ->getFont()
             ->setBold(true)
             ->setSize(16);
     
         $sheet
-            ->getStyle('A1:K1')
+            ->getStyle('A1:L1')
             ->getAlignment()
             ->setHorizontal(
                 \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
@@ -2186,13 +3530,7 @@ class ReconciliationController extends Controller
                 'r.activity',
                 'r.comments',
                 'r.note',
-    
-                /*
-                |--------------------------------------------------------------------------
-                | SITE
-                |--------------------------------------------------------------------------
-                */
-    
+                'b.jns_bank',
                 'b.site as site',
             ])
     
@@ -2278,26 +3616,16 @@ class ReconciliationController extends Controller
             'Site',
             'Receipt Number',
             'Receipt Date',
-            'Receipt Amount',
-            'Receipt Bank Account',
-            'Receipt Type',
-            'Receipt Status',
+            'Amount',
+            'Jenis Bank',
+            'Bank Account',
+            'Type',
+            'Status',
             'Paid By',
             'Activity',
             'Comments',
             'Note',
         ];
-    
-    
-        /*
-        |--------------------------------------------------------------------------
-        | TULIS HEADER
-        |--------------------------------------------------------------------------
-        |
-        | Header dimulai dari row 7 seperti screenshot.
-        |
-        |--------------------------------------------------------------------------
-        */
     
         $sheet->fromArray(
             $headers,
@@ -2394,7 +3722,18 @@ class ReconciliationController extends Controller
                 $receipt->receipt_amount
             );
     
+            /*
+            |--------------------------------------------------------------------------
+            | JENIS BANK
+            |--------------------------------------------------------------------------
+            */
     
+            $sheet->setCellValueExplicit(
+                "E{$row}",
+                (string) ($receipt->jns_bank ?? ''),
+                \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
+            );
+
             /*
             |--------------------------------------------------------------------------
             | REKENING BANK
@@ -2402,7 +3741,7 @@ class ReconciliationController extends Controller
         */
     
             $sheet->setCellValueExplicit(
-                "E{$row}",
+                "F{$row}",
                 (string) ($receipt->remittance_bank_account ?? ''),
                 \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
             );
@@ -2415,7 +3754,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "F{$row}",
+                "G{$row}",
                 $receipt->receipt_type
             );
     
@@ -2427,7 +3766,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "G{$row}",
+                "H{$row}",
                 $receipt->receipt_status
             );
     
@@ -2439,7 +3778,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "H{$row}",
+                "I{$row}",
                 $receipt->paid_by
             );
     
@@ -2451,7 +3790,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "I{$row}",
+                "J{$row}",
                 $receipt->activity
             );
     
@@ -2463,7 +3802,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "J{$row}",
+                "K{$row}",
                 $receipt->comments
             );
     
@@ -2475,7 +3814,7 @@ class ReconciliationController extends Controller
             */
     
             $sheet->setCellValue(
-                "K{$row}",
+                "L{$row}",
                 $receipt->note
             );
     
@@ -2502,7 +3841,7 @@ class ReconciliationController extends Controller
         |--------------------------------------------------------------------------
         */
     
-        $headerRange = 'A7:K7';
+        $headerRange = 'A7:L7';
     
         $sheet
             ->getStyle($headerRange)
@@ -2555,7 +3894,7 @@ class ReconciliationController extends Controller
         if ($lastRow >= 7) {
     
             $sheet
-                ->getStyle("A7:K{$lastRow}")
+                ->getStyle("A7:L{$lastRow}")
                 ->getBorders()
                 ->getAllBorders()
                 ->setBorderStyle(
@@ -2629,7 +3968,7 @@ class ReconciliationController extends Controller
         if ($lastRow >= 8) {
     
             $sheet
-                ->getStyle("A8:K{$lastRow}")
+                ->getStyle("A8:L{$lastRow}")
                 ->getAlignment()
                 ->setVertical(
                     \PhpOffice\PhpSpreadsheet\Style\Alignment::VERTICAL_TOP
@@ -2660,7 +3999,7 @@ class ReconciliationController extends Controller
                 );
     
             $sheet
-                ->getStyle("F8:G{$lastRow}")
+                ->getStyle("G8:H{$lastRow}")
                 ->getAlignment()
                 ->setHorizontal(
                     \PhpOffice\PhpSpreadsheet\Style\Alignment::HORIZONTAL_CENTER
@@ -2673,15 +4012,13 @@ class ReconciliationController extends Controller
         | WRAP TEXT
         |--------------------------------------------------------------------------
         */
-    
         if ($lastRow >= 8) {
     
             $sheet
-                ->getStyle("H8:J{$lastRow}")
+                ->getStyle("J8:K{$lastRow}")
                 ->getAlignment()
                 ->setWrapText(true);
         }
-    
     
         /*
         |--------------------------------------------------------------------------
@@ -2704,14 +4041,14 @@ class ReconciliationController extends Controller
         $sheet
             ->getColumnDimension('D')
             ->setWidth(18);
-    
+        
         $sheet
             ->getColumnDimension('E')
-            ->setWidth(25);
-    
+            ->setWidth(18);
+
         $sheet
             ->getColumnDimension('F')
-            ->setWidth(18);
+            ->setWidth(25);
     
         $sheet
             ->getColumnDimension('G')
@@ -2719,11 +4056,11 @@ class ReconciliationController extends Controller
     
         $sheet
             ->getColumnDimension('H')
-            ->setWidth(20);
+            ->setWidth(18);
     
         $sheet
             ->getColumnDimension('I')
-            ->setWidth(25);
+            ->setWidth(20);
     
         $sheet
             ->getColumnDimension('J')
@@ -2731,6 +4068,10 @@ class ReconciliationController extends Controller
     
         $sheet
             ->getColumnDimension('K')
+            ->setWidth(45);
+    
+        $sheet
+            ->getColumnDimension('L')
             ->setWidth(25);
     
     
@@ -2750,7 +4091,7 @@ class ReconciliationController extends Controller
         */
     
         $sheet->setAutoFilter(
-            "A7:K{$lastRow}"
+            "A7:L{$lastRow}"
         );
     }
 
@@ -5075,17 +6416,8 @@ class ReconciliationController extends Controller
             'type'   => 'required|in:FRC,REG',
         ]);
 
-
-        $cabang = trim(
-            $request->input('cabang')
-        );
-
-        $type = strtoupper(
-            trim(
-                $request->input('type')
-            )
-        );
-
+        $cabang = trim($request->input('cabang'));
+        $type = strtoupper(trim($request->input('type')));
 
         /*
         |--------------------------------------------------------------------------
@@ -5107,7 +6439,6 @@ class ReconciliationController extends Controller
 
         }
 
-
         /*
         |--------------------------------------------------------------------------
         | REGULER
@@ -5121,31 +6452,45 @@ class ReconciliationController extends Controller
                 ->where('site', 'REG')
                 ->whereNotNull('no_rek')
                 ->whereRaw("TRIM(no_rek) <> ''")
-                ->select('no_rek')
+                ->select('jns_bank', 'no_rek', 'akun')
                 ->distinct()
+                ->orderBy('jns_bank')
                 ->orderBy('no_rek')
-                ->pluck('no_rek');
+                ->get()
+                ->map(function ($item) {
+                    return [
+                        'jns_bank' => trim(
+                            (string) ($item->jns_bank ?? '')
+                        ),
+                        'no_rek' => trim(
+                            (string) $item->no_rek
+                        ),
+                        'akun' => trim(
+                            (string) $item->akun
+                        ),
+                    ];
+                })
+                ->values();
 
         }
 
-
         return response()->json([
-
             'success' => true,
-
-            'type' => $type,
-
-            'cabang' => $cabang,
-
-            'count' => $accounts->count(),
-
-            'data' => $accounts->values(),
-
+            'type'    => $type,
+            'cabang'  => $cabang,
+            'count'   => $accounts->count(),
+            'data'    => $accounts,
         ]);
     }
-
+    
     public function reconcileReceipt(Request $request)
     {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. VALIDASI REQUEST
+        |--------------------------------------------------------------------------
+        */
+
         $request->validate([
             'cabang'    => 'required|string|max:50',
             'period_id' => 'required|integer',
@@ -5153,47 +6498,43 @@ class ReconciliationController extends Controller
             'account'   => 'nullable|string|max:255',
         ]);
 
-        $cabang = trim($request->input('cabang'));
+        $cabang   = trim($request->input('cabang'));
         $periodId = (int) $request->input('period_id');
-        $type = strtoupper(trim($request->input('type')));
-        $account = trim((string) $request->input('account', ''));
+        $type     = strtoupper(trim($request->input('type')));
+        $account  = trim((string) $request->input('account', ''));
 
         /*
         |--------------------------------------------------------------------------
-        | FRC
+        | 2. JALUR FRC
         |--------------------------------------------------------------------------
+        |
+        | Pertahankan algoritma FRC yang lama.
+        | Jangan mengubah reconcileReceiptFranchise().
         */
 
         if ($type === 'FRC') {
-
             try {
-
                 return $this->reconcileReceiptFranchise(
                     $cabang,
                     $periodId,
                     $account
                 );
-
             } catch (\Throwable $e) {
-
-                Log::error(
-                    'REKONSILIASI FRC ERROR',
-                    [
-                        'cabang'    => $cabang,
-                        'period_id' => $periodId,
-                        'type'      => $type,
-                        'account'   => $account,
-                        'message'   => $e->getMessage(),
-                        'file'      => $e->getFile(),
-                        'line'      => $e->getLine(),
-                        'trace'     => $e->getTraceAsString(),
-                    ]
-                );
+                Log::error('REKONSILIASI FRC ERROR', [
+                    'cabang'    => $cabang,
+                    'period_id' => $periodId,
+                    'type'      => $type,
+                    'account'   => $account,
+                    'message'   => $e->getMessage(),
+                    'file'      => $e->getFile(),
+                    'line'      => $e->getLine(),
+                    'trace'     => $e->getTraceAsString(),
+                ]);
 
                 return response()->json([
                     'success' => false,
                     'message' => $e->getMessage(),
-                    'data' => [],
+                    'data'    => [],
                     'summary' => $this->emptyReconciliationSummary(),
                 ], 500);
             }
@@ -5201,22 +6542,400 @@ class ReconciliationController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | REG
-        |--------------------------------------------------------------------------
-        |
-        | Untuk sementara tetap dikembalikan sebagai belum tersedia.
-        | Jangan menggunakan tabel mutasi REG yang belum kita pastikan
-        | strukturnya.
+        | 3. VALIDASI REKENING REG
         |--------------------------------------------------------------------------
         */
 
-        return response()->json([
-            'success' => false,
-            'message' =>
-                'Proses rekonsiliasi REG belum diimplementasikan pada endpoint ini.',
-            'data' => [],
-            'summary' => $this->emptyReconciliationSummary(),
-        ], 422);
+        if ($account === '' || strtoupper($account) === 'ALL') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Pilih satu rekening REG terlebih dahulu.',
+                'data'    => [],
+                'summary' => $this->emptyReconciliationSummary(),
+            ], 422);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. VALIDASI INPUT METHODS
+        |--------------------------------------------------------------------------
+        */
+
+        $request->validate([
+            'methods' => 'required|json',
+        ]);
+
+        $requestedMethods = json_decode(
+            $request->input('methods'),
+            true
+        );
+
+        if (
+            !is_array($requestedMethods) ||
+            empty($requestedMethods)
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Pilih minimal satu metode rekonsiliasi REG.',
+                'data'    => [],
+                'summary' => $this->emptyReconciliationSummary(),
+            ], 422);
+        }
+
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | 5. VALIDASI REKENING REG DAN SETTING
+            |--------------------------------------------------------------------------
+            */
+
+            $bank = DB::table('bank')
+                ->where('cabang', $cabang)
+                ->where('no_rek', $account)
+                ->where('site', 'REG')
+                ->whereNotNull('jns_bank')
+                ->first();
+
+            if (!$bank) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rekening REG tidak ditemukan atau tidak valid.',
+                    'data'    => [],
+                    'summary' => $this->emptyReconciliationSummary(),
+                ], 404);
+            }
+
+            $availableMethods = DB::table('setting')
+                ->where('cabang', $cabang)
+                ->where('category', 'rekon_methode')
+                ->where('sub_category', $bank->jns_bank)
+                ->get()
+                ->keyBy('id');
+
+            /*
+            |--------------------------------------------------------------------------
+            | 6. NORMALISASI DAN URUTKAN METODE
+            |--------------------------------------------------------------------------
+            */
+
+            $methods = collect($requestedMethods)
+                ->map(function ($item) {
+                    if (!is_array($item)) {
+                        return [
+                            'id'    => 0,
+                            'value' => '',
+                            'order' => 0,
+                        ];
+                    }
+
+                    return [
+                        'id'    => (int) ($item['id'] ?? 0),
+                        'value' => trim((string) ($item['value'] ?? '')),
+                        'order' => (int) ($item['order'] ?? 0),
+                    ];
+                })
+                ->sortBy('order')
+                ->values();
+
+            /*
+            |--------------------------------------------------------------------------
+            | 7. VALIDASI METODE YANG DIDUKUNG
+            |--------------------------------------------------------------------------
+            */
+
+            $supportedMethods = [
+                'date_amount',
+                'sls_date_site_amount',
+                'sls_sum_date_site_amount',
+                'sls_sum_date_site_amount_reverse',
+                'sls_sum_date_site_amount_many',
+                'ats_date_amount',
+                'virtual_transactions',
+                'sls_sum_date_activity_amount_reverse',
+                'date_amount_remark',
+                'sum_date_amount_remark_reverse',
+                'fas_date_site_amount',
+                'fas_sum_date_site_amount_reverse',
+            ];
+
+            $seenIds = [];
+            $seenOrders = [];
+
+            foreach ($methods as $method) {
+                $id    = $method['id'];
+                $value = $method['value'];
+                $order = $method['order'];
+
+                if (
+                    $id <= 0 ||
+                    isset($seenIds[$id]) ||
+                    !$availableMethods->has($id)
+                ) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Metode tidak valid atau tidak tersedia pada setting.',
+                        'data'    => [],
+                        'summary' => $this->emptyReconciliationSummary(),
+                    ], 422);
+                }
+
+                if ($order < 0 || isset($seenOrders[$order])) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Urutan metode tidak valid atau terdapat urutan ganda.',
+                        'data'    => [],
+                        'summary' => $this->emptyReconciliationSummary(),
+                    ], 422);
+                }
+
+                $seenIds[$id] = true;
+                $seenOrders[$order] = true;
+
+                $configuredValue = trim(
+                    (string) $availableMethods->get($id)->value
+                );
+
+                if ($configuredValue !== $value) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Nama metode tidak sesuai dengan konfigurasi database.',
+                        'data'    => [],
+                        'summary' => $this->emptyReconciliationSummary(),
+                    ], 422);
+                }
+
+                if (!in_array($value, $supportedMethods, true)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Metode rekonsiliasi REG '{$value}' belum didukung.",
+                        'data'    => [],
+                        'summary' => $this->emptyReconciliationSummary(),
+                    ], 422);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 8. JALANKAN SERVICE REG BERDASARKAN URUTAN METODE
+            |--------------------------------------------------------------------------
+            |
+            | Catatan:
+            | Metode berikutnya akan memproses data yang masih belum memiliki reff,
+            | sesuai filter yang terdapat di RegularReconciliationService.
+            */
+
+            $service = app(RegularReconciliationService::class);
+
+            $results = [];
+
+            foreach ($methods as $method) {
+                switch ($method['value']) {
+                    case 'date_amount':
+                        $result = $service->reconcileDateAmount(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'sls_date_site_amount':
+                        $result = $service->reconcileSlsDateSiteAmount(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'sls_sum_date_site_amount':
+                        $result = $service->reconcileSlsSumDateSiteAmount(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'sls_sum_date_site_amount_reverse':
+                        $result = $service->reconcileSlsSumDateSiteAmountReverse(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'sls_sum_date_site_amount_many':
+                        $result = $service->reconcileSlsSumDateSiteAmountMany(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                        
+                    case 'ats_date_amount':
+                        $result = $service->reconcileAtsDateAmount(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                    
+                    case 'virtual_transactions':
+                        $result = $service->reconcileVirtualTransactions(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                    
+                    case 'sls_sum_date_activity_amount_reverse':
+                        $result = $service->reconcileSlsSumDateActivityAmountReverse(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                    
+                    case 'date_amount_remark':
+                        $result = $service->reconcileDateAmountRemark(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                    
+                    case 'sum_date_amount_remark_reverse':
+                        $result = $service->reconcileSumDateAmountRemarkReverse(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'fas_date_site_amount':
+                        $result = $service->reconcileFasDateSiteAmount(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+
+                    case 'fas_sum_date_site_amount_reverse':
+                        $result = $service->reconcileFasSumDateSiteAmountReverse(
+                            $cabang,
+                            $periodId,
+                            $account
+                        );
+                        break;
+                        
+                    default:
+                        // Pengaman tambahan apabila metode tidak dikenal.
+                        throw new \RuntimeException(
+                            'Metode rekonsiliasi REG tidak didukung: '
+                            . $method['value']
+                        );
+                }
+
+                $results[] = [
+                    'method' => $method['value'],
+                    'order'  => $method['order'],
+                    'result' => $result,
+                ];
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 9. GABUNGKAN HASIL SELURUH METODE
+            |--------------------------------------------------------------------------
+            |
+            | Hasil masing-masing metode tetap tersedia agar detail dan summary
+            | per metode dapat diperiksa secara terpisah.
+            */
+
+            $totalMatches = collect($results)
+                ->sum(fn ($item) =>
+                    (int) ($item['result']['summary']['match'] ?? 0)
+                );
+
+            $totalAmbiguous = collect($results)
+                ->sum(fn ($item) =>
+                    (int) ($item['result']['summary']['ambiguous'] ?? 0)
+                );
+
+            $allMatches = collect($results)
+                ->flatMap(fn ($item) =>
+                    $item['result']['data']['matches'] ?? []
+                )
+                ->values();
+
+            $allAmbiguous = collect($results)
+                ->flatMap(fn ($item) =>
+                    $item['result']['data']['ambiguous'] ?? []
+                )
+                ->values();
+
+            /*
+            * Ringkasan receipt/mutasi yang belum cocok diambil dari hasil metode
+            * terakhir, sebab metode tersebut dijalankan setelah metode sebelumnya.
+            */
+            $lastResult = collect($results)->last()['result'] ?? null;
+
+            $lastSummary = $lastResult['summary'] ?? [];
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Rekonsiliasi REG selesai.',
+                'rekening' => $account,
+                'periode' => $lastResult['periode'] ?? [],
+                'method' => $methods->pluck('value')->all(),
+
+                'data' => [
+                    'matches' => $allMatches,
+                    'ambiguous' => $allAmbiguous,
+                    'unmatched_receipts' =>
+                        $lastResult['data']['unmatched_receipts'] ?? [],
+                    'unmatched_mutasi' =>
+                        $lastResult['data']['unmatched_mutasi'] ?? [],
+                    'method_results' => $results,
+                ],
+
+                'summary' => [
+                    'total_receipt' =>
+                        $lastSummary['total_receipt'] ?? 0,
+                    'total_mutasi' =>
+                        $lastSummary['total_mutasi'] ?? 0,
+                    'match' => $totalMatches,
+                    'ambiguous' => $totalAmbiguous,
+                    'receipt_only' =>
+                        $lastSummary['receipt_only'] ?? 0,
+                    'mutasi_only' =>
+                        $lastSummary['mutasi_only'] ?? 0,
+                    'receipt_amount' =>
+                        $lastSummary['receipt_amount'] ?? 0,
+                    'mutasi_amount' =>
+                        $lastSummary['mutasi_amount'] ?? 0,
+                    'difference_amount' =>
+                        $lastSummary['difference_amount'] ?? 0,
+                ],
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('REKONSILIASI REG ERROR', [
+                'cabang'    => $cabang,
+                'period_id' => $periodId,
+                'account'   => $account,
+                'methods'   => $requestedMethods ?? [],
+                'message'   => $e->getMessage(),
+                'file'      => $e->getFile(),
+                'line'      => $e->getLine(),
+                'trace'     => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Rekonsiliasi REG gagal: ' . $e->getMessage(),
+                'data'    => [],
+                'summary' => $this->emptyReconciliationSummary(),
+            ], 500);
+        }
     }
 
     private function reconcileReceiptFranchise(
@@ -5500,7 +7219,6 @@ class ReconciliationController extends Controller
                 'comments',
                 'activity',
                 'paid_by',
-                'trx_id',
                 'reff',
             ])
     
@@ -5978,10 +7696,6 @@ class ReconciliationController extends Controller
                             $receipt->paid_by
                             ?? null,
     
-                        'trx_id' =>
-                            $receipt->trx_id
-                            ?? null,
-    
                         'mutasi_amount' =>
                             0,
     
@@ -6300,10 +8014,6 @@ class ReconciliationController extends Controller
                         $receipt->paid_by
                         ?? null,
     
-                    'trx_id' =>
-                        $receipt->trx_id
-                        ?? null,
-    
                     'mutation_number' =>
                         $mutasiRow->trx_code
                         ?? null,
@@ -6598,10 +8308,6 @@ class ReconciliationController extends Controller
     
                     'paid_by' =>
                         $receipt->paid_by
-                        ?? null,
-    
-                    'trx_id' =>
-                        $receipt->trx_id
                         ?? null,
     
                     'mutasi_amount' =>
@@ -7446,18 +9152,6 @@ class ReconciliationController extends Controller
                                 ', '
                             ),
     
-                    'trx_id' =>
-                        $selectedReceipts
-                            ->pluck(
-                                'trx_id'
-                            )
-                            ->filter()
-                            ->unique()
-                            ->values()
-                            ->implode(
-                                ', '
-                            ),
-    
                     /*
                     |--------------------------------------------------------------------------
                     | Mutasi
@@ -7860,18 +9554,6 @@ class ReconciliationController extends Controller
                                 ', '
                             ),
     
-                    'trx_id' =>
-                        $selectedReceipts
-                            ->pluck(
-                                'trx_id'
-                            )
-                            ->filter()
-                            ->unique()
-                            ->values()
-                            ->implode(
-                                ', '
-                            ),
-    
                     'mutasi_amount' =>
                         $mutasiAmount,
     
@@ -7976,10 +9658,6 @@ class ReconciliationController extends Controller
     
                     'paid_by' =>
                         $receipt->paid_by
-                        ?? null,
-    
-                    'trx_id' =>
-                        $receipt->trx_id
                         ?? null,
     
                     'mutasi_amount' =>
@@ -9181,7 +10859,6 @@ class ReconciliationController extends Controller
                     'comments',
                     'activity',
                     'paid_by',
-                    'trx_id',
                     'reff',
                 ]);
 
@@ -9777,9 +11454,6 @@ class ReconciliationController extends Controller
 
                                     'paid_by' =>
                                         $row->paid_by,
-
-                                    'trx_id' =>
-                                        $row->trx_id,
 
                                     'reff' =>
                                         $row->reff,
@@ -11030,4 +12704,607 @@ class ReconciliationController extends Controller
 
         ]);
     }
+
+    public function getReconciliationMethods(Request $request)
+    {
+        $validated = $request->validate([
+            'cabang' => ['required', 'string', 'max:50'],
+            'no_rek' => ['required', 'string', 'max:100'],
+        ]);
+
+        $cabang = trim($validated['cabang']);
+        $noRek = trim($validated['no_rek']);
+
+        // 1. Pastikan rekening terdaftar untuk cabang
+        //    dan merupakan rekening Reguler.
+        $bank = DB::table('bank')
+            ->where('cabang', $cabang)
+            ->where('no_rek', $noRek)
+            ->where('site', 'REG')
+            ->select('id', 'no_rek', 'jns_bank', 'site')
+            ->first();
+
+        if (!$bank) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Rekening Reguler tidak ditemukan untuk cabang tersebut.',
+                'data' => [],
+            ], 404);
+        }
+        
+        // 2. Ambil metode berdasarkan cabang dan jns_bank.
+        $methods = DB::table('setting')
+            ->whereRaw('TRIM(cabang) = ?', [$cabang])
+            ->whereRaw('TRIM(category) = ?', ['rekon_methode'])
+            ->whereRaw(
+                'TRIM(sub_category) = ?',
+                [trim((string) $bank->jns_bank)]
+            )
+            ->select(
+                'id',
+                'cabang',
+                'category',
+                'sub_category',
+                'value'
+            )
+            ->orderBy('id')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Metode rekonsiliasi berhasil dimuat.',
+            'rekening' => [
+                'no_rek' => $bank->no_rek,
+                'jns_bank' => $bank->jns_bank,
+            ],
+            'data' => $methods,
+        ]);
+    }
+    
+    public function updateMutasi(Request $request)
+    {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. VALIDASI PAYLOAD
+        |--------------------------------------------------------------------------
+        */
+
+        $validator = Validator::make($request->all(), [
+            'cabang'            => ['required', 'string', 'max:50'],
+            'records'           => ['required', 'array', 'min:1'],
+            'records.*.no_rek'  => ['required', 'string', 'max:100'],
+            'records.*.tgl'     => ['required', 'string', 'max:50'],
+            'records.*.remark'  => ['required', 'string'],
+            'records.*.remark1' => ['sometimes', 'nullable', 'string'],
+            'records.*.cr'      => ['required'],
+            'records.*.dept'    => ['required', 'string', 'max:50'],
+            'records.*.site'    => ['sometimes', 'nullable', 'string', 'max:50'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi data gagal.',
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+
+        $cabang  = trim($request->input('cabang'));
+        $records = $request->input('records');
+
+        $total   = count($records);
+        $updated = 0;
+        $skipped = 0;
+        $failed  = 0;
+        $errors  = [];
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. FORMAT TANGGAL YANG DIDUKUNG
+        |--------------------------------------------------------------------------
+        */
+
+        $dateFormats = [
+            'd-M-y',
+            'd-M-Y',
+            'd/m/Y',
+            'd/m/y',
+            'Y-m-d',
+            'd-m-Y',
+            'd-m-y',
+        ];
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. PROSES SETIAP BARIS EXCEL
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($records as $index => $record) {
+            $rowNumber = $index + 2;
+
+            try {
+                /*
+                |--------------------------------------------------------------------------
+                | NORMALISASI TANGGAL
+                |--------------------------------------------------------------------------
+                */
+
+                $rawDate = trim((string) $record['tgl']);
+                $tgl = null;
+
+                foreach ($dateFormats as $format) {
+                    try {
+                        $parsed = \Carbon\Carbon::createFromFormat(
+                            '!' . $format,
+                            $rawDate,
+                            config('app.timezone')
+                        );
+
+                        if ($parsed !== false) {
+                            $dateErrors = \Carbon\Carbon::getLastErrors();
+
+                            if (
+                                $dateErrors === false ||
+                                (
+                                    $dateErrors['warning_count'] === 0 &&
+                                    $dateErrors['error_count'] === 0
+                                )
+                            ) {
+                                $tgl = $parsed->format('Y-m-d');
+                                break;
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        // Lanjutkan ke format tanggal berikutnya.
+                    }
+                }
+
+                if (!$tgl) {
+                    $failed++;
+
+                    $errors[] = [
+                        'row'     => $rowNumber,
+                        'message' => "Format tanggal tidak valid: {$rawDate}",
+                    ];
+
+                    continue;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | NORMALISASI CR
+                |--------------------------------------------------------------------------
+                | 48,000.00 -> 48000.00
+                */
+
+                $rawCr = trim((string) $record['cr']);
+                $normalizedCr = str_replace(',', '', $rawCr);
+
+                if (
+                    $normalizedCr === '' ||
+                    !is_numeric($normalizedCr) ||
+                    (float) $normalizedCr < 0
+                ) {
+                    $failed++;
+
+                    $errors[] = [
+                        'row'     => $rowNumber,
+                        'message' => "Nominal CR tidak valid: {$rawCr}",
+                    ];
+
+                    continue;
+                }
+
+                $cr = number_format(
+                    (float) $normalizedCr,
+                    2,
+                    '.',
+                    ''
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | NORMALISASI DATA TRANSAKSI
+                |--------------------------------------------------------------------------
+                */
+
+                $noRek = trim((string) $record['no_rek']);
+                $remark = (string) $record['remark'];
+                $dept = trim((string) ($record['dept'] ?? ''));
+                $site = trim((string) ($record['site'] ?? ''));
+                $updateSite = $site !== '';
+
+                if (
+                    $noRek === '' ||
+                    trim($remark) === '' ||
+                    $dept === ''
+                ) {
+                    $failed++;
+
+                    $errors[] = [
+                        'row'     => $rowNumber,
+                        'message' => 'NO REK, REMARK, dan DEPT tidak boleh kosong. SITE bersifat opsional.',
+                    ];
+
+                    continue;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | REMARK1 OPSIONAL
+                |--------------------------------------------------------------------------
+                | Jika properti remark1 dikirim:
+                | - nilai berisi teks: cocokkan dengan nilai tersebut
+                | - nilai kosong/null: cocokkan dengan remark1 NULL atau ''
+                |
+                | Jika properti tidak dikirim: jangan gunakan remark1 sebagai filter.
+                */
+
+                $hasRemark1 = array_key_exists('remark1', $record);
+
+                $remark1 = $hasRemark1 && $record['remark1'] !== null
+                    ? (string) $record['remark1']
+                    : null;
+
+                /*
+                |--------------------------------------------------------------------------
+                | 4. CARI DAN UPDATE SATU RECORD
+                |--------------------------------------------------------------------------
+                | Pemilihan ID dan update dilakukan dalam transaksi.
+                | lockForUpdate mencegah record yang sama dipilih oleh
+                | proses bersamaan sebelum transaksi selesai.
+                */
+
+                $result = DB::transaction(function () use (
+                    $cabang,
+                    $noRek,
+                    $tgl,
+                    $remark,
+                    $remark1,
+                    $hasRemark1,
+                    $cr,
+                    $dept,
+                    $site,
+                    $updateSite
+                ) {
+                    $query = DB::table('mutasi_detail')
+                        ->select('id')
+                        ->where('cabang', $cabang)
+                        ->where('no_rek', $noRek)
+                        ->where('tgl', $tgl)
+                        ->where('remark', $remark)
+                        ->where('cr', $cr)
+                        ->whereNull('dept')
+                        ->orderBy('id')
+                        ->lockForUpdate();
+
+                    // Jika SITE akan diisi, pertahankan aturan lama:
+                    // record harus memiliki dept dan site yang masih NULL.
+                    // Jika SITE kosong, cukup pastikan dept masih NULL.
+                    if ($updateSite) {
+                        $query->whereNull('site');
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | FILTER REMARK1 JIKA DIKIRIM
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if ($hasRemark1) {
+                        if ($remark1 === null || trim($remark1) === '') {
+                            $query->where(function ($q) {
+                                $q->whereNull('remark1')
+                                ->orWhere('remark1', '');
+                            });
+                        } else {
+                            $query->where('remark1', $remark1);
+                        }
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | AMBIL SATU RECORD SAJA
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $mutasi = $query->first();
+
+                    if (!$mutasi) {
+                        return 'skipped';
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | UPDATE BERDASARKAN PRIMARY KEY
+                    |--------------------------------------------------------------------------
+                    | Syarat dept NULL diperiksa kembali untuk keamanan.
+                    */
+
+                    $updateData = [
+                        'dept' => $dept,
+                    ];
+
+                    // SITE hanya ikut diperbarui jika nilainya diisi.
+                    if ($updateSite) {
+                        $updateData['site'] = $site;
+                    }
+
+                    $updateQuery = DB::table('mutasi_detail')
+                        ->where('id', $mutasi->id)
+                        ->where('cabang', $cabang);
+
+                    $affected = $updateQuery->update($updateData);
+
+                    return $affected === 1 ? 'updated' : 'skipped';
+                }, 3);
+
+                if ($result === 'updated') {
+                    $updated++;
+                } else {
+                    $skipped++;
+                }
+
+            } catch (\Throwable $e) {
+                report($e);
+
+                $failed++;
+
+                $errors[] = [
+                    'row'     => $rowNumber,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. RESPONSE KE FRONTEND
+        |--------------------------------------------------------------------------
+        */
+
+        return response()->json([
+            'success' => $failed === 0,
+            'message' => 'Proses update mutasi selesai.',
+            'total'   => $total,
+            'updated' => $updated,
+            'skipped' => $skipped,
+            'failed'  => $failed,
+            'errors'  => $errors,
+        ]);
+    }
+    
+    public function updateReceipt(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'cabang' => ['required', 'string', 'max:50'],
+            'records' => ['required', 'array', 'min:1'],
+
+            'records.*.remittance_bank_account' => [
+                'required',
+                'string',
+                'max:100',
+            ],
+            'records.*.receipt_number' => [
+                'required',
+                'string',
+                'max:100',
+            ],
+            'records.*.receipt_date' => [
+                'required',
+                'date',
+            ],
+
+            // Field opsional: hanya divalidasi jika dikirim dan berisi nilai.
+            'records.*.category' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:50',
+            ],
+            'records.*.site' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:50',
+            ],
+            'records.*.note' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:1000',
+            ],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validasi data receipt gagal.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $cabang = trim((string) $request->input('cabang'));
+        $records = $request->input('records', []);
+
+        $total = count($records);
+        $updated = 0;
+        $skipped = 0;
+        $failed = 0;
+        $errors = [];
+
+        try {
+            DB::transaction(function () use (
+                $records,
+                &$updated,
+                &$skipped,
+                &$failed,
+                &$errors
+            ) {
+                foreach ($records as $index => $record) {
+                    $rowNumber = $index + 1;
+
+                    try {
+                        $account = trim(
+                            (string) ($record['remittance_bank_account'] ?? '')
+                        );
+
+                        $receiptNumber = trim(
+                            (string) ($record['receipt_number'] ?? '')
+                        );
+
+                        $receiptDate = trim(
+                            (string) ($record['receipt_date'] ?? '')
+                        );
+
+                        /*
+                        * Cari berdasarkan rekening dan nomor receipt.
+                        * receipt_date tetap divalidasi, tetapi bukan
+                        * kunci pencarian.
+                        */
+                        $query = DB::table('receipt')
+                            ->where(
+                                'remittance_bank_account',
+                                $account
+                            )
+                            ->where(
+                                'receipt_number',
+                                $receiptNumber
+                            );
+
+                        $matches = (clone $query)
+                            ->lockForUpdate()
+                            ->limit(2)
+                            ->get(['id']);
+
+                        if ($matches->isEmpty()) {
+                            $skipped++;
+
+                            $errors[] = [
+                                'row' => $rowNumber,
+                                'message' =>
+                                    "Receipt tidak ditemukan: rekening "
+                                    . "{$account}, nomor {$receiptNumber}.",
+                            ];
+
+                            continue;
+                        }
+
+                        if ($matches->count() > 1) {
+                            $skipped++;
+
+                            $errors[] = [
+                                'row' => $rowNumber,
+                                'message' =>
+                                    "Ditemukan lebih dari satu receipt "
+                                    . "untuk rekening {$account} dan "
+                                    . "nomor {$receiptNumber}. "
+                                    . "Data tidak diperbarui.",
+                            ];
+
+                            continue;
+                        }
+
+                        $receiptId = $matches->first()->id;
+
+                        /*
+                        * Hanya field yang memiliki nilai yang akan
+                        * dimasukkan ke updateData.
+                        *
+                        * category, site, dan note:
+                        * - Tidak dikirim       -> tidak diupdate.
+                        * - Nilai null/kosong  -> tidak diupdate.
+                        * - Berisi nilai       -> diupdate.
+                        */
+                        $updateData = [];
+
+                        foreach (['category', 'site', 'note'] as $field) {
+                            if (!array_key_exists($field, $record)) {
+                                continue;
+                            }
+
+                            $value = $record[$field];
+
+                            if ($value === null) {
+                                continue;
+                            }
+
+                            if (is_string($value)) {
+                                $value = trim($value);
+                            }
+
+                            if ($value === '') {
+                                continue;
+                            }
+
+                            $updateData[$field] = $value;
+                        }
+
+                        /*
+                        * Tidak ada field opsional yang berisi nilai.
+                        * Receipt tetap dihitung sebagai dilewati karena
+                        * tidak ada perubahan yang perlu dilakukan.
+                        */
+                        if (empty($updateData)) {
+                            $skipped++;
+
+                            $errors[] = [
+                                'row' => $rowNumber,
+                                'message' =>
+                                    "Tidak ada field category, site, atau "
+                                    . "note yang berisi nilai untuk diupdate.",
+                            ];
+
+                            continue;
+                        }
+
+                        DB::table('receipt')
+                            ->where('id', $receiptId)
+                            ->where(
+                                'remittance_bank_account',
+                                $account
+                            )
+                            ->where(
+                                'receipt_number',
+                                $receiptNumber
+                            )
+                            ->update($updateData);
+
+                        $updated++;
+
+                    } catch (\Throwable $e) {
+                        $failed++;
+
+                        $errors[] = [
+                            'row' => $rowNumber,
+                            'message' => $e->getMessage(),
+                        ];
+                    }
+                }
+            });
+
+            return response()->json([
+                'success' => $failed === 0 && $skipped === 0,
+                'message' => 'Proses update receipt selesai.',
+                'total' => $total,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'failed' => $failed,
+                'errors' => $errors,
+            ]);
+
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memproses update receipt.',
+                'error' => config('app.debug')
+                    ? $e->getMessage()
+                    : 'Terjadi kesalahan pada server.',
+            ], 500);
+        }
+    }
+
 }

@@ -18,7 +18,7 @@ import {
     FaSyncAlt,
     FaSearch,
     FaDownload,
-    FaFilter,
+    FaEdit,
     FaCheckCircle,
     FaExclamationTriangle,
     FaReceipt,
@@ -33,7 +33,7 @@ import {
     FaTimesCircle,
     FaHistory,
     FaLink,
-    FaUnlink
+    FaInfoCircle,
 } from "react-icons/fa";
 
 
@@ -503,16 +503,497 @@ export default function Receipt() {
     const [selectedFiles, setSelectedFiles] =
         useState([]);
 
+    const [updateMutasiText, setUpdateMutasiText] = useState("");
+    const [updateMutasiRows, setUpdateMutasiRows] = useState([]);
+    const [updateMutasiHeaders, setUpdateMutasiHeaders] = useState([]);
+    const [updatingMutasi, setUpdatingMutasi] = useState(false);
+
+    /*
+    |--------------------------------------------------------------------------
+    | PARSE DATA EXCEL KE TABEL HTML
+    |--------------------------------------------------------------------------
+    */
+
+    const handleParseUpdateMutasi = (value) => {
+        setUpdateMutasiText(value);
+
+        if (!value.trim()) {
+            setUpdateMutasiHeaders([]);
+            setUpdateMutasiRows([]);
+            return;
+        }
+
+        const lines = value
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n")
+            .split("\n")
+            .filter((line) => line.trim() !== "");
+
+        const parsedRows = lines.map((line) =>
+            line.split("\t").map((cell) => cell.trim())
+        );
+
+        if (parsedRows.length === 0) {
+            setUpdateMutasiHeaders([]);
+            setUpdateMutasiRows([]);
+            return;
+        }
+
+        const headers = parsedRows[0];
+        const rows = parsedRows.slice(1).map((cells, index) => ({
+            _rowNumber: index + 1,
+            cells: headers.map((_, columnIndex) =>
+                cells[columnIndex] ?? ""
+            ),
+        }));
+
+        setUpdateMutasiHeaders(headers);
+        setUpdateMutasiRows(rows);
+    };
+
+    const resetUpdateMutasi = () => {
+        setUpdateMutasiText("");
+        setUpdateMutasiHeaders([]);
+        setUpdateMutasiRows([]);
+    };
+    
+    const handleProcessUpdateMutasi = async () => {
+        if (!cabang) {
+            await Swal.fire(
+                "Validasi Gagal",
+                "Cabang belum tersedia.",
+                "warning"
+            );
+            return;
+        }
+
+        if (!updateMutasiHeaders.length || !updateMutasiRows.length) {
+            await Swal.fire(
+                "Data Kosong",
+                "Tempelkan data Excel dan tampilkan tabel terlebih dahulu.",
+                "warning"
+            );
+            return;
+        }
+
+        const normalizeHeader = (value) =>
+            String(value ?? "")
+                .trim()
+                .toLowerCase()
+                .replace(/[_\s]+/g, " ");
+
+        const headerMap = {};
+
+        updateMutasiHeaders.forEach((header, index) => {
+            const normalized = normalizeHeader(header);
+
+            // Jika header duplikat, gunakan posisi kolom pertama.
+            if (
+                normalized &&
+                !Object.prototype.hasOwnProperty.call(
+                    headerMap,
+                    normalized
+                )
+            ) {
+                headerMap[normalized] = index;
+            }
+        });
+
+        const aliases = {
+            mutasi: {
+                no_rek: [
+                    "no rek",
+                    "no rekening",
+                    "no_rek",
+                    "nomor rekening",
+                ],
+                tgl: ["tgl", "tanggal"],
+                remark: ["remark", "keterangan"],
+                cr: ["cr", "credit", "kredit"],
+                dept: ["dept", "kategori", "category"],
+                site: ["site"],
+                remark1: [
+                    "remark1",
+                    "remark 1",
+                    "keterangan1",
+                    "keterangan 1",
+                ],
+            },
+
+            receipt: {
+                remittance_bank_account: [
+                    "remittance_bank_account",
+                    "remittance bank account",
+                ],
+                receipt_number: [
+                    "receipt_number",
+                    "receipt number",
+                ],
+                receipt_date: [
+                    "receipt_date",
+                    "receipt date",
+                    "tgl",
+                    "tanggal",
+                ],
+                category: ["category", "kategori"],
+                site: ["site"],
+                note: ["note", "catatan"],
+            },
+        };
+
+        const buildColumnIndex = (fieldAliases) => {
+            const result = {};
+
+            for (const [field, names] of Object.entries(fieldAliases)) {
+                const matchedName = names.find((name) =>
+                    Object.prototype.hasOwnProperty.call(
+                        headerMap,
+                        normalizeHeader(name)
+                    )
+                );
+
+                if (matchedName !== undefined) {
+                    result[field] = headerMap[normalizeHeader(matchedName)];
+                }
+            }
+
+            return result;
+        };
+
+        const mutasiColumns = buildColumnIndex(aliases.mutasi);
+        const receiptColumns = buildColumnIndex(aliases.receipt);
+
+        const hasRequiredColumns = (columns, requiredFields) =>
+            requiredFields.every(
+                (field) => columns[field] !== undefined
+            );
+
+        // SITE tidak wajib untuk mutasi_detail.
+        const mutasiRequired = [
+            "no_rek",
+            "tgl",
+            "remark",
+            "cr",
+            "dept",
+        ];
+
+        // Category, site, dan note tidak wajib untuk receipt.
+        const receiptRequired = [
+            "remittance_bank_account",
+            "receipt_number",
+            "receipt_date",
+        ];
+
+        let type;
+        let columnIndex;
+        let requiredFields;
+        let endpoint;
+        let processTitle;
+        let successTitle;
+
+        if (hasRequiredColumns(mutasiColumns, mutasiRequired)) {
+            type = "mutasi_detail";
+            columnIndex = mutasiColumns;
+            requiredFields = mutasiRequired;
+            endpoint = "/api/rekon/update-mutasi";
+            processTitle = "Proses Update Mutasi?";
+            successTitle = "Update Mutasi Selesai";
+        } else if (
+            hasRequiredColumns(receiptColumns, receiptRequired)
+        ) {
+            type = "receipt";
+            columnIndex = receiptColumns;
+            requiredFields = receiptRequired;
+            endpoint = "/api/rekon/update-receipt";
+            processTitle = "Proses Update Receipt?";
+            successTitle = "Update Receipt Selesai";
+        } else {
+            await Swal.fire({
+                icon: "warning",
+                title: "Header Tidak Sesuai",
+                html: `
+                    <div style="text-align:left;line-height:1.8">
+                        <p><strong>Untuk mutasi_detail:</strong></p>
+                        <p>NO REK, TGL, REMARK, CR, DEPT (SITE opsional)</p>
+                        <hr style="margin:10px 0">
+                        <p><strong>Untuk receipt:</strong></p>
+                        <p>
+                            REMITTANCE_BANK_ACCOUNT, RECEIPT_NUMBER,
+                            RECEIPT_DATE
+                        </p>
+                        <p>
+                            CATEGORY, SITE, dan NOTE/CATATAN bersifat opsional.
+                        </p>
+                    </div>
+                `,
+            });
+            return;
+        }
+
+        const records = [];
+        const invalidRows = [];
+
+        updateMutasiRows.forEach((row) => {
+            const getValue = (field) => {
+                const index = columnIndex[field];
+
+                if (index === undefined) return "";
+
+                return String(row.cells[index] ?? "").trim();
+            };
+
+            let record;
+
+            if (type === "mutasi_detail") {
+                record = {
+                    no_rek: getValue("no_rek"),
+                    tgl: getValue("tgl"),
+                    remark: getValue("remark"),
+                    cr: getValue("cr"),
+                    dept: getValue("dept"),
+                    site: getValue("site"),
+                };
+
+                // REMARK1 opsional.
+                if (columnIndex.remark1 !== undefined) {
+                    record.remark1 = getValue("remark1");
+                }
+            } else {
+                record = {
+                    remittance_bank_account: getValue(
+                        "remittance_bank_account"
+                    ),
+                    receipt_number: getValue("receipt_number"),
+                    receipt_date: getValue("receipt_date"),
+                };
+
+                /*
+                * Field opsional receipt:
+                * hanya dikirim jika kolom tersedia dan nilainya
+                * tidak kosong. Sel kosong tidak akan menghapus data lama.
+                */
+                ["category", "site", "note"].forEach((field) => {
+                    if (columnIndex[field] === undefined) {
+                        return;
+                    }
+
+                    const value = getValue(field);
+
+                    if (value !== "") {
+                        record[field] = value;
+                    }
+                });
+            }
+
+            const missingFields = requiredFields.filter(
+                (field) => !String(record[field] ?? "").trim()
+            );
+
+            if (missingFields.length > 0) {
+                invalidRows.push({
+                    row: row._rowNumber,
+                    fields: missingFields,
+                });
+                return;
+            }
+
+            records.push(record);
+        });
+
+        const escapeHtml = (value) =>
+            String(value).replace(/[&<>"']/g, (char) => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+            })[char]);
+
+        if (invalidRows.length > 0) {
+            const details = invalidRows
+                .slice(0, 20)
+                .map(
+                    (item) =>
+                        `Baris ${item.row}: ${item.fields.join(", ")}`
+                );
+
+            await Swal.fire({
+                icon: "warning",
+                title: "Data Belum Lengkap",
+                html: `
+                    <div style="text-align:left;line-height:1.8">
+                        ${details
+                            .map(
+                                (item) =>
+                                    `<div>${escapeHtml(item)}</div>`
+                            )
+                            .join("")}
+                        ${
+                            invalidRows.length > 20
+                                ? `<div>Dan ${
+                                    invalidRows.length - 20
+                                } baris lainnya.</div>`
+                                : ""
+                        }
+                    </div>
+                `,
+            });
+
+            return;
+        }
+
+        if (records.length === 0) {
+            await Swal.fire(
+                "Data Kosong",
+                "Tidak ada baris valid untuk diproses.",
+                "warning"
+            );
+            return;
+        }
+
+        const escapedCabang = escapeHtml(cabang);
+
+        const optionalFieldsInfo = type === "receipt"
+            ? `
+                <div style="margin-top:10px">
+                    Category, Site, dan Note hanya akan diperbarui
+                    jika kolom tersedia dan selnya berisi nilai.
+                    Sel kosong tidak mengubah nilai lama.
+                </div>
+            `
+            : `
+                <div style="margin-top:10px">
+                    Jika SITE diisi, DEPT dan SITE akan diperbarui
+                    sesuai aturan backend. Jika SITE kosong, hanya
+                    DEPT yang akan diperbarui.
+                </div>
+            `;
+
+        const confirmation = await Swal.fire({
+            icon: "question",
+            title: processTitle,
+            html: `
+                <div style="text-align:left;line-height:1.8">
+                    <div>Jenis data:
+                        <strong>${
+                            type === "mutasi_detail"
+                                ? "Mutasi Detail"
+                                : "Receipt"
+                        }</strong>
+                    </div>
+                    <div>Cabang: <strong>${escapedCabang}</strong></div>
+                    <div>Jumlah data: <strong>${records.length}</strong></div>
+                    ${optionalFieldsInfo}
+                </div>
+            `,
+            showCancelButton: true,
+            confirmButtonText: "Ya, Proses Update",
+            cancelButtonText: "Batal",
+            confirmButtonColor: "#2563eb",
+        });
+
+        if (!confirmation.isConfirmed) return;
+
+        setUpdatingMutasi(true);
+
+        try {
+            const response = await axios.post(endpoint, {
+                cabang,
+                records,
+            });
+
+            const result = response?.data ?? {};
+
+            await Swal.fire({
+                icon: result.success ? "success" : "warning",
+                title: result.success
+                    ? successTitle
+                    : "Update Selesai dengan Catatan",
+                width: 650,
+                html: `
+                    <div style="text-align:left;line-height:1.8">
+                        <div>Total data:
+                            <strong>${result.total ?? records.length}</strong>
+                        </div>
+                        <div>Berhasil diperbarui:
+                            <strong>${result.updated ?? 0}</strong>
+                        </div>
+                        <div>Dilewati:
+                            <strong>${result.skipped ?? 0}</strong>
+                        </div>
+                        <div>Gagal:
+                            <strong>${result.failed ?? 0}</strong>
+                        </div>
+                        ${
+                            Array.isArray(result.errors) &&
+                            result.errors.length
+                                ? `
+                                    <hr style="margin:12px 0">
+                                    <div><strong>
+                                        Detail error (maksimal 10):
+                                    </strong></div>
+                                    <ul style="padding-left:20px;
+                                        max-height:250px;overflow-y:auto">
+                                        ${result.errors
+                                            .slice(0, 10)
+                                            .map((error) => {
+                                                const message =
+                                                    typeof error === "string"
+                                                        ? error
+                                                        : `Baris ${error.row}: ${error.message}`;
+
+                                                return `<li>${escapeHtml(message)}</li>`;
+                                            })
+                                            .join("")}
+                                    </ul>
+                                    ${
+                                        result.errors.length > 10
+                                            ? `<div>Dan ${
+                                                result.errors.length - 10
+                                            } error lainnya.</div>`
+                                            : ""
+                                    }
+                                `
+                                : ""
+                        }
+                    </div>
+                `,
+            });
+        } catch (error) {
+            console.error(
+                `Update ${type} error:`,
+                error.response?.status,
+                error.response?.data || error.message
+            );
+
+            const data = error.response?.data;
+
+            const message =
+                data?.message ||
+                data?.error ||
+                error.message ||
+                `Terjadi kesalahan saat memperbarui ${type}.`;
+
+            await Swal.fire({
+                icon: "error",
+                title: `Update Gagal (${
+                    error.response?.status || "Network Error"
+                })`,
+                text: message,
+                footer: data?.errors
+                    ? Object.values(data.errors).flat().join(" | ")
+                    : undefined,
+            });
+        } finally {
+            setUpdatingMutasi(false);
+        }
+    };
+
 
     /*
     |--------------------------------------------------------------------------
     | RECON FILTER
     |--------------------------------------------------------------------------
-    */
-
-    /*
-    | FRC = Franchise
-    | REG = Reguler
     */
 
     const [reconType, setReconType] =
@@ -721,11 +1202,6 @@ export default function Receipt() {
 
                 } catch (error) {
 
-                    console.error(
-                        "Active period error:",
-                        error
-                    );
-
                     setPeriod(null);
 
                     await Swal.fire({
@@ -771,277 +1247,372 @@ export default function Receipt() {
         fetchActivePeriod
     ]);
 
+    const [availableMethods, setAvailableMethods] = useState([]);
+    const [selectedMethods, setSelectedMethods] = useState([]);
+    const [loadingMethods, setLoadingMethods] = useState(false);
 
-    /*
-    |--------------------------------------------------------------------------
-    | ACCOUNT LIST
-    |--------------------------------------------------------------------------
-    |
-    | Satu-satunya loader daftar rekening:
-    | /api/rekon/rekening?cabang=...&type=FRC|REG
-    |
-    | FRC -> DISTINCT jns_bank
-    | REG -> DISTINCT no_rek WHERE site = REG
-    |
-    | Daftar dimuat saat cabang berubah dan saat user
-    | mengganti jenis rekonsiliasi.
-    |--------------------------------------------------------------------------
-    */
+    const methodRequestRef = useRef(0);
 
-    /*
-    |--------------------------------------------------------------------------
-    | RUN RECONCILIATION
-    |--------------------------------------------------------------------------
-    |
-    | Rekonsiliasi HANYA dijalankan melalui
-    | tombol "Jalankan Rekonsiliasi".
-    |
-    */
+    const fetchReconciliationMethods = async () => {
+        const requestId = ++methodRequestRef.current;
 
-    const runReconciliation =
-        useCallback(
-            async () => {
+        // Metode hanya digunakan untuk rekonsiliasi Reguler
+        if (
+            reconType !== "REG" ||
+            reconAccount === "ALL" ||
+            !cabang
+        ) {
+            setAvailableMethods([]);
+            setSelectedMethods([]);
+            setLoadingMethods(false);
+            return;
+        }
 
-                if (loading) {
+        setLoadingMethods(true);
+        setAvailableMethods([]);
+        setSelectedMethods([]);
 
-                    return;
-
+        try {
+            const response = await axios.get(
+                "/api/rekon/metode",
+                {
+                    params: {
+                        cabang,
+                        no_rek: reconAccount,
+                    },
                 }
+            );
 
+            // Abaikan response dari rekening yang sudah tidak dipilih
+            if (requestId !== methodRequestRef.current) {
+                return;
+            }
 
-                if (!cabang) {
+            const result = response?.data || {};
 
-                    await Swal.fire({
+            if (!result.success) {
+                throw new Error(
+                    result.message || "Gagal mengambil metode rekonsiliasi."
+                );
+            }
 
-                        icon: "warning",
+            const methods = Array.isArray(result.data)
+                ? result.data
+                : [];
 
-                        title:
-                            "Cabang Belum Tersedia",
+            setAvailableMethods(methods);
 
-                        text:
-                            "Cabang belum tersedia."
+            // Awalnya semua metode tersedia dipilih sesuai urutan dari backend
+            setSelectedMethods(
+                methods.map((method, index) => ({
+                    ...method,
+                    order: index + 1,
+                }))
+            );
+        } catch (error) {
+            if (requestId !== methodRequestRef.current) {
+                return;
+            }
 
-                    });
+            console.error(
+                "Fetch reconciliation methods error:",
+                error
+            );
 
-                    return;
+            setAvailableMethods([]);
+            setSelectedMethods([]);
 
-                }
+            await Swal.fire({
+                icon: "error",
+                title: "Gagal Memuat Metode",
+                text:
+                    error?.response?.data?.message ||
+                    error?.message ||
+                    "Daftar metode rekonsiliasi gagal dimuat.",
+            });
+        } finally {
+            if (requestId === methodRequestRef.current) {
+                setLoadingMethods(false);
+            }
+        }
+    };
 
+    useEffect(() => {
+        fetchReconciliationMethods();
 
-                if (!period?.id) {
+        return () => {
+            // Membatalkan pemakaian response lama
+            methodRequestRef.current += 1;
+        };
+    }, [cabang, reconType, reconAccount]);
 
-                    await Swal.fire({
+    const removeReconciliationMethod = (methodId) => {
+        setSelectedMethods((current) =>
+            current
+                .filter((method) => method.id !== methodId)
+                .map((method, index) => ({
+                    ...method,
+                    order: index + 1,
+                }))
+        );
+    };
 
-                        icon: "warning",
+    const reorderReconciliationMethods = (sourceId, targetId) => {
+        if (sourceId === targetId) return;
 
-                        title:
-                            "Periode Belum Tersedia",
+        setSelectedMethods((current) => {
+            const items = [...current];
 
-                        text:
-                            "Periode Mutasi aktif belum tersedia."
+            const sourceIndex = items.findIndex(
+                (method) => String(method.id) === String(sourceId)
+            );
 
-                    });
+            const targetIndex = items.findIndex(
+                (method) => String(method.id) === String(targetId)
+            );
 
-                    return;
+            if (sourceIndex < 0 || targetIndex < 0) {
+                return current;
+            }
 
-                }
+            const [movedItem] = items.splice(sourceIndex, 1);
+            items.splice(targetIndex, 0, movedItem);
 
+            return items.map((method, index) => ({
+                ...method,
+                order: index + 1,
+            }));
+        });
+    };
 
-                if (
-                    !reconType
-                ) {
+    
+    const runReconciliation = useCallback(
+        async () => {
+            if (loading) {
+                return;
+            }
 
-                    await Swal.fire({
-
-                        icon: "warning",
-
-                        title:
-                            "Jenis Rekonsiliasi",
-
-                        text:
-                            "Silakan pilih jenis rekonsiliasi."
-
-                    });
-
-                    return;
-
-                }
-
-
-                setLoading(true);
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Bersihkan hasil sebelumnya
-                |--------------------------------------------------------------------------
-                */
-
-                setData([]);
-
-                setSummary({
-                    ...EMPTY_SUMMARY
+            // ==================================================
+            // VALIDASI CABANG
+            // ==================================================
+            if (!cabang) {
+                await Swal.fire({
+                    icon: "warning",
+                    title: "Cabang Belum Tersedia",
+                    text: "Cabang belum tersedia.",
                 });
 
-                setExpandedRow(null);
+                return;
+            }
 
+            // ==================================================
+            // VALIDASI PERIODE
+            // ==================================================
+            if (!period?.id) {
+                await Swal.fire({
+                    icon: "warning",
+                    title: "Periode Belum Tersedia",
+                    text: "Periode Mutasi aktif belum tersedia.",
+                });
 
-                try {
+                return;
+            }
 
-                    const response =
-                        await axios.get(
-                            "/api/rekon/receipt",
-                            {
-                                params: {
+            // ==================================================
+            // VALIDASI JENIS REKONSILIASI
+            // ==================================================
+            if (!reconType) {
+                await Swal.fire({
+                    icon: "warning",
+                    title: "Jenis Rekonsiliasi",
+                    text: "Silakan pilih jenis rekonsiliasi.",
+                });
 
-                                    cabang,
+                return;
+            }
 
-                                    period_id:
-                                        period.id,
-
-                                    type:
-                                        reconType,
-
-                                    account:
-                                        reconAccount !==
-                                        "ALL"
-                                            ? reconAccount
-                                            : ""
-
-                                }
-                            }
-                        );
-
-
-                    const result =
-                        response?.data || {};
-
-
-                    const resultData =
-                        Array.isArray(
-                            result.data
-                        )
-                            ? result.data
-                            : [];
-
-
-                    setData(
-                        resultData
-                    );
-
-
-                    setSummary({
-
-                        total:
-                            Number(
-                                result.summary?.total ??
-                                resultData.length ??
-                                0
-                            ),
-
-                        match:
-                            Number(
-                                result.summary?.match ??
-                                0
-                            ),
-
-                        mutasi_only:
-                            Number(
-                                result.summary?.mutasi_only ??
-                                0
-                            ),
-
-                        receipt_only:
-                            Number(
-                                result.summary?.receipt_only ??
-                                0
-                            ),
-
-                        nominal_different:
-                            Number(
-                                result.summary?.nominal_different ??
-                                0
-                            ),
-
-                        account_different:
-                            Number(
-                                result.summary?.account_different ??
-                                0
-                            ),
-
-                        mutasi_amount:
-                            Number(
-                                result.summary?.mutasi_amount ??
-                                0
-                            ),
-
-                        receipt_amount:
-                            Number(
-                                result.summary?.receipt_amount ??
-                                0
-                            ),
-
-                        difference_amount:
-                            Number(
-                                result.summary?.difference_amount ??
-                                0
-                            )
-
-                    });
-
-
-                    setResultFilter(
-                        "ALL"
-                    );
-
-
-                    setReconciliationExecuted(
-                        true
-                    );
-
-
-                } catch (error) {
-
-                    console.error(
-                        "Reconciliation error:",
-                        error
-                    );
-
-                    setReconciliationExecuted(
-                        false
-                    );
-
-
+            // ==================================================
+            // VALIDASI KHUSUS REGULER
+            // Tidak mengubah perilaku Franchise
+            // ==================================================
+            if (reconType === "REG") {
+                if (!reconAccount || reconAccount === "ALL") {
                     await Swal.fire({
-
-                        icon: "error",
-
-                        title:
-                            "Rekonsiliasi Gagal",
-
+                        icon: "warning",
+                        title: "Rekening Belum Dipilih",
                         text:
-                            getErrorMessage(
-                                error,
-                                "Data rekonsiliasi gagal diproses."
-                            )
-
+                            "Pilih satu rekening Reguler sebelum menjalankan rekonsiliasi.",
                     });
 
-                } finally {
-
-                    setLoading(false);
-
+                    return;
                 }
 
-            },
-            [
-                cabang,
-                period?.id,
-                reconType,
-                reconAccount,
-                loading
-            ]
-        );
+                if (
+                    !Array.isArray(selectedMethods) ||
+                    selectedMethods.length === 0
+                ) {
+                    await Swal.fire({
+                        icon: "warning",
+                        title: "Metode Belum Dipilih",
+                        text:
+                            "Pilih minimal satu metode rekonsiliasi Reguler.",
+                    });
+
+                    return;
+                }
+            }
+
+            // ==================================================
+            // SUSUN PAYLOAD METODE
+            // Hanya REG yang menggunakan metode
+            // Urutan mengikuti posisi kartu saat ini
+            // ==================================================
+            const methodsPayload =
+                reconType === "REG"
+                    ? selectedMethods.map((method, index) => ({
+                        id: method.id,
+                        value: method.value,
+                        order: index + 1,
+                    }))
+                    : [];
+
+            // ==================================================
+            // LOADING DAN BERSIHKAN HASIL SEBELUMNYA
+            // ==================================================
+            setLoading(true);
+
+            setData([]);
+
+            setSummary({
+                ...EMPTY_SUMMARY,
+            });
+
+            setExpandedRow(null);
+
+            setReconciliationExecuted(false);
+
+            try {
+                // ==================================================
+                // PARAMETER DASAR
+                // Parameter Franchise tetap sama seperti sebelumnya
+                // ==================================================
+                const params = {
+                    cabang,
+                    period_id: period.id,
+                    type: reconType,
+                    account:
+                        reconAccount !== "ALL"
+                            ? reconAccount
+                            : "",
+                };
+
+                // ==================================================
+                // TAMBAHAN KHUSUS REGULER
+                // Franchise tidak menerima parameter methods
+                // ==================================================
+                if (reconType === "REG") {
+                    params.methods = JSON.stringify(methodsPayload);
+                }
+
+                // ==================================================
+                // REQUEST REKONSILIASI
+                // Endpoint dan metode HTTP tetap sama
+                // ==================================================
+                const response = await axios.get(
+                    "/api/rekon/receipt",
+                    {
+                        params,
+                    }
+                );
+
+                const result = response?.data || {};
+
+                // ==================================================
+                // AMBIL DATA HASIL
+                // ==================================================
+                const resultData = Array.isArray(result.data)
+                    ? result.data
+                    : [];
+
+                setData(resultData);
+
+                // ==================================================
+                // UPDATE SUMMARY
+                // Struktur tetap seperti fungsi sebelumnya
+                // ==================================================
+                setSummary({
+                    total: Number(
+                        result.summary?.total ??
+                            resultData.length ??
+                            0
+                    ),
+
+                    match: Number(
+                        result.summary?.match ?? 0
+                    ),
+
+                    mutasi_only: Number(
+                        result.summary?.mutasi_only ?? 0
+                    ),
+
+                    receipt_only: Number(
+                        result.summary?.receipt_only ?? 0
+                    ),
+
+                    nominal_different: Number(
+                        result.summary?.nominal_different ?? 0
+                    ),
+
+                    account_different: Number(
+                        result.summary?.account_different ?? 0
+                    ),
+
+                    mutasi_amount: Number(
+                        result.summary?.mutasi_amount ?? 0
+                    ),
+
+                    receipt_amount: Number(
+                        result.summary?.receipt_amount ?? 0
+                    ),
+
+                    difference_amount: Number(
+                        result.summary?.difference_amount ?? 0
+                    ),
+                });
+
+                setResultFilter("ALL");
+
+                setReconciliationExecuted(true);
+            } catch (error) {
+                console.error(
+                    "Reconciliation error:",
+                    error
+                );
+
+                setReconciliationExecuted(false);
+
+                await Swal.fire({
+                    icon: "error",
+                    title: "Rekonsiliasi Gagal",
+                    text: getErrorMessage(
+                        error,
+                        "Data rekonsiliasi gagal diproses."
+                    ),
+                });
+            } finally {
+                setLoading(false);
+            }
+        },
+        [
+            cabang,
+            period?.id,
+            reconType,
+            reconAccount,
+            selectedMethods,
+            loading,
+        ]
+    );
+
 
 
     /*
@@ -1980,6 +2551,7 @@ export default function Receipt() {
                         item.description,
 
                         item.comments,
+                        ...(item.receipts || []).map(receipt => receipt.comments),
 
                         item.receipt_status,
 
@@ -2932,135 +3504,166 @@ export default function Receipt() {
     
     };
 
-
     const accountRequestRef = useRef(0);
 
     const fetchReconciliationAccounts = async (type = reconType) => {
         const requestId = ++accountRequestRef.current;
+
         if (!cabang) {
-            console.log("Tidak ada cabang.");
             setAccounts([]);
             setReconAccount("ALL");
             return;
         }
-    
+
         const selectedType = String(type || "")
             .trim()
             .toUpperCase();
-    
-        console.log("=================================");
-        console.log("FETCH REKENING REKONSILIASI");
-        console.log("Cabang :", cabang);
-        console.log("Type   :", selectedType);
-        console.log("=================================");
-    
+
         setLoadingAccounts(true);
-    
+
         try {
             const response = await axios.get(
                 "/api/rekon/rekening",
                 {
                     params: {
                         cabang: cabang,
-                        type: selectedType
-                    }
+                        type: selectedType,
+                    },
                 }
             );
-    
-            console.log(
-                "Response rekening:",
-                response
-            );
-    
+
             const result = response?.data || {};
-    
-            console.log(
-                "Response data:",
-                result
-            );
-    
+
             if (!result.success) {
                 throw new Error(
                     result.message ||
                     "Gagal mengambil daftar rekening."
                 );
             }
-    
+
             const rawList = Array.isArray(result.data)
                 ? result.data
                 : [];
-    
-            console.log(
-                "Data rekening dari API:",
-                rawList
-            );
-    
-            const uniqueAccounts = [
-                ...new Set(
-                    rawList
-                        .map(item =>
-                            String(item ?? "").trim()
-                        )
-                        .filter(item => item !== "")
-                )
-            ];
-    
+
+            console.log("Data rekening dari API:", rawList);
+
+            /*
+            |--------------------------------------------------------------------------
+            | FORMAT DATA REKENING
+            |--------------------------------------------------------------------------
+            |
+            | FRC:
+            |   ["BCA", "BRI", ...]
+            |
+            | REG:
+            |   [
+            |       {
+            |           jns_bank: "BCA",
+            |           no_rek: "0015201300001151",
+            |           akun: "Akun BCA"
+            |       }
+            |   ]
+            |
+            */
+
+            let uniqueAccounts = [];
+
+            if (selectedType === "REG") {
+                uniqueAccounts = [
+                    ...new Map(
+                        rawList
+                            .map((item) => {
+                                const noRek = String(
+                                    item?.no_rek ?? ""
+                                ).trim();
+
+                                const jnsBank = String(
+                                    item?.jns_bank ?? ""
+                                ).trim();
+
+                                const akun = String(
+                                    item?.akun ?? ""
+                                ).trim();
+
+                                if (!noRek) {
+                                    return null;
+                                }
+
+                                return [
+                                    noRek,
+                                    {
+                                        no_rek: noRek,
+                                        jns_bank: jnsBank,
+                                        akun: akun,
+                                    },
+                                ];
+                            })
+                            .filter(Boolean)
+                    ).values(),
+                ];
+            } else {
+                uniqueAccounts = [
+                    ...new Set(
+                        rawList
+                            .map((item) =>
+                                String(item ?? "").trim()
+                            )
+                            .filter(Boolean)
+                    ),
+                ];
+            }
+
             console.log(
                 "HASIL ACCOUNT FINAL:",
                 uniqueAccounts
             );
-    
+
             console.log(
                 "JUMLAH ACCOUNT:",
                 uniqueAccounts.length
             );
-    
+
             /*
             |--------------------------------------------------------------------------
-            | SIMPAN KE STATE
+            | CEK REQUEST TERBARU
             |--------------------------------------------------------------------------
             */
-    
+
             if (requestId !== accountRequestRef.current) {
-    
                 console.log(
-    
                     "Response rekening diabaikan karena request sudah tidak terbaru."
-    
                 );
-    
+
                 return;
-    
             }
 
-    
-            setAccounts(uniqueAccounts);
-    
             /*
             |--------------------------------------------------------------------------
-            | RESET PILIHAN
+            | SIMPAN DATA KE STATE
             |--------------------------------------------------------------------------
             */
-    
-            setReconAccount("ALL");
-    
-        } catch (error) {
 
+            setAccounts(uniqueAccounts);
+
+            /*
+            |--------------------------------------------------------------------------
+            | RESET PILIHAN REKENING
+            |--------------------------------------------------------------------------
+            */
+
+            setReconAccount("ALL");
+
+        } catch (error) {
             console.error(
                 "Fetch reconciliation accounts error:",
                 error
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Jangan biarkan request lama menghapus hasil request terbaru.
-            |--------------------------------------------------------------------------
-            */
-
             if (requestId !== accountRequestRef.current) {
                 console.log(
                     "Error rekening diabaikan karena request sudah tidak terbaru."
                 );
+
                 return;
             }
 
@@ -3070,26 +3673,17 @@ export default function Receipt() {
             await Swal.fire({
                 icon: "error",
                 title: "Gagal Memuat Rekening",
-                text:
-                    getErrorMessage(
-                        error,
-                        "Daftar rekening rekonsiliasi tidak dapat dimuat."
-                    ),
-                confirmButtonText: "OK"
+                text: getErrorMessage(
+                    error,
+                    "Daftar rekening rekonsiliasi tidak dapat dimuat."
+                ),
+                confirmButtonText: "OK",
             });
 
         } finally {
-
-    
             if (requestId === accountRequestRef.current) {
-
-    
                 setLoadingAccounts(false);
-
-    
             }
-
-    
         }
     };
 
@@ -3374,6 +3968,91 @@ export default function Receipt() {
 
         setManualMutasi(null);
     };
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESET SEMUA FORM KETIKA CABANG BERUBAH
+    |--------------------------------------------------------------------------
+    */
+
+    const previousCabangRef = useRef(cabang);
+
+    useEffect(() => {
+        if (previousCabangRef.current === cabang) {
+            return;
+        }
+
+        previousCabangRef.current = cabang;
+
+        /*
+        |--------------------------------------------------------------------------
+        | RESET FORM IMPORT
+        |--------------------------------------------------------------------------
+        */
+
+        resetUpload();
+
+        /*
+        |--------------------------------------------------------------------------
+        | RESET FORM REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+
+        resetReconciliation();
+
+        setReconType("REG");
+        setReconAccount("ALL");
+        setResultFilter("ALL");
+        setSearch("");
+        setShowFilter(false);
+        setExpandedRow(null);
+
+        // Hapus daftar rekening cabang sebelumnya.
+        setAccounts([]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | RESET HASIL RIWAYAT REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+
+        setHistoryData([]);
+        setHistoryExecuted(false);
+        setHistoryExpandedRow(null);
+
+        /*
+        |--------------------------------------------------------------------------
+        | RESET FILTER RIWAYAT
+        |--------------------------------------------------------------------------
+        */
+
+        setHistoryType("FRC");
+        setHistoryBank("ALL");
+        setHistoryAccount("ALL");
+        setHistoryCategory("ALL");
+
+        setHistoryDateStart("");
+        setHistoryDateEnd("");
+        setHistorySearch("");
+
+        // Hapus pilihan filter milik cabang sebelumnya.
+        setHistoryBanks([]);
+        setHistoryAccounts([]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | RESET DETAIL REKONSILIASI MANUAL
+        |--------------------------------------------------------------------------
+        */
+
+        setManualReceipt(null);
+        setManualMutasi(null);
+
+    }, [
+        cabang,
+        resetReconciliation
+    ]);
+
 
     const fetchHistoryFilters = async () => {
 
@@ -4130,58 +4809,6 @@ export default function Receipt() {
 
                             </button>
 
-                            <button
-                                type="button"
-                                onClick={
-                                    handleExport
-                                }
-                                disabled={
-                                    exporting ||
-                                    !reconciliationExecuted ||
-                                    !data.length
-                                }
-                                className="
-                                    inline-flex
-                                    items-center
-                                    gap-2
-                                    px-3
-                                    py-2
-                                    rounded-lg
-                                    bg-green-600
-                                    hover:bg-green-700
-                                    text-white
-                                    text-sm
-                                    font-medium
-                                    disabled:bg-gray-400
-                                "
-                            >
-
-                                {exporting ? (
-
-                                    <>
-                                        <FaSyncAlt
-                                            className="
-                                                animate-spin
-                                            "
-                                        />
-
-                                        Export...
-
-                                    </>
-
-                                ) : (
-
-                                    <>
-                                        <FaFileExcel />
-
-                                        Export Excel
-
-                                    </>
-
-                                )}
-
-                            </button>
-
                         </div>
 
                     </div>
@@ -4475,6 +5102,31 @@ export default function Receipt() {
 
                         </button>
 
+                        {/* UPDATE MUTASI */}
+
+                        <button
+                            type="button"
+                            onClick={() => setActiveTab("update-mutasi")}
+                            className={`
+                                shrink-0
+                                px-4
+                                py-3
+                                text-sm
+                                font-semibold
+                                border-b-2
+                                transition
+                                ${
+                                    activeTab === "update-mutasi"
+                                        ? "border-blue-600 text-blue-600"
+                                        : "border-transparent text-gray-500 hover:text-gray-700"
+                                }
+                            `}
+                        >
+                            <span className="inline-flex items-center gap-2">
+                                <FaEdit />
+                                Update Mutasi / Receipt
+                            </span>
+                        </button>
 
                         {/* RECONCILIATION */}
 
@@ -4643,7 +5295,7 @@ export default function Receipt() {
                     {activeTab === "import" && (
 
                         <div className="
-                            max-w-4xl
+                            max-w
                             mx-auto
                         ">
 
@@ -5194,13 +5846,230 @@ export default function Receipt() {
 
                     )}
 
+                    {/* ======================================================
+                        UPDATE MUTASI
+                    ====================================================== */}
+
+                    {activeTab === "update-mutasi" && (
+                        <div className="w-full space-y-4">
+                            {/* TEXTAREA */}
+
+                            <div className="bg-white rounded-xl border shadow-sm p-4 space-y-3">
+
+                                <div className="flex items-center justify-between gap-3 flex-wrap">
+                                    <label className="text-sm font-semibold text-gray-700">
+                                        Paste Data From Excel
+                                    </label>
+
+                                    <span className="text-xs text-gray-500">
+                                        {updateMutasiText
+                                            ? `${updateMutasiText.split(/\r\n|\r|\n/).filter(line => line.trim() !== "").length} baris ditempel`
+                                            : "Belum ada data"}
+                                    </span>
+                                </div>
+
+                                <textarea
+                                    value={updateMutasiText}
+                                    onChange={(event) =>
+                                        handleParseUpdateMutasi(event.target.value)
+                                    }
+                                    placeholder={`Salin tabel dari Excel, termasuk judul kolom, kemudian tempelkan di sini.
+
+                    Contoh:
+                    id    no_rek    tgl    dept    site
+                    101   0306584744    2026-10-03    SLS    TH7M`}
+                                    rows={8}
+                                    spellCheck={false}
+                                    className="
+                                        w-full
+                                        border border-gray-300
+                                        rounded-lg
+                                        p-3
+                                        text-sm
+                                        font-mono
+                                        focus:outline-none
+                                        focus:ring-2
+                                        focus:ring-blue-500
+                                        focus:border-blue-500
+                                        resize-y
+                                    "
+                                />
+
+                                <div className="flex gap-2 flex-wrap">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!updateMutasiText.trim()) return;
+
+                                            handleParseUpdateMutasi(updateMutasiText);
+                                        }}
+                                        disabled={!updateMutasiText.trim()}
+                                        className="
+                                            inline-flex items-center gap-2
+                                            px-4 py-2 rounded-lg
+                                            bg-blue-600 text-white
+                                            text-sm font-semibold
+                                            hover:bg-blue-700
+                                            disabled:opacity-50 disabled:cursor-not-allowed
+                                        "
+                                    >
+                                        <FaSyncAlt />
+                                        Tampilkan Tabel
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={resetUpdateMutasi}
+                                        disabled={!updateMutasiText}
+                                        className="
+                                            inline-flex items-center gap-2
+                                            px-4 py-2 rounded-lg
+                                            border border-gray-300
+                                            text-gray-700
+                                            text-sm font-semibold
+                                            hover:bg-gray-50
+                                            disabled:opacity-50 disabled:cursor-not-allowed
+                                        "
+                                    >
+                                        <FaTrash />
+                                        Bersihkan
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={handleProcessUpdateMutasi}
+                                        disabled={
+                                            updatingMutasi ||
+                                            updateMutasiHeaders.length === 0 ||
+                                            updateMutasiRows.length === 0
+                                        }
+                                        className="
+                                            inline-flex items-center gap-2
+                                            px-4 py-2 rounded-lg
+                                            bg-emerald-600 text-white
+                                            text-sm font-semibold
+                                            hover:bg-emerald-700
+                                            disabled:opacity-50 disabled:cursor-not-allowed
+                                        "
+                                    >
+                                        {updatingMutasi ? (
+                                            <>
+                                                <FaSyncAlt className="animate-spin" />
+                                                Memproses Update...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <FaEdit />
+                                                Update
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* HTML TABLE PREVIEW */}
+
+                            {updateMutasiHeaders.length > 0 && (
+                                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+
+                                    <div className="p-4 border-b flex items-center justify-between gap-3 flex-wrap">
+                                        <div>
+                                            <h3 className="font-bold text-gray-800">
+                                                Pratinjau Data Mutasi
+                                            </h3>
+
+                                            <p className="text-xs text-gray-500 mt-1">
+                                                Periksa kolom dan data sebelum proses update
+                                                dikembangkan.
+                                            </p>
+                                        </div>
+
+                                        <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold">
+                                            {updateMutasiRows.length} data
+                                        </span>
+                                    </div>
+
+                                    <div className="w-full overflow-auto max-h-[600px]">
+                                        <table className="min-w-full border-collapse text-sm">
+
+                                            <thead className="sticky top-0 z-10 bg-gray-100">
+                                                <tr>
+                                                    <th className="border px-3 py-2 text-center whitespace-nowrap">
+                                                        No.
+                                                    </th>
+
+                                                    {updateMutasiHeaders.map((header, index) => (
+                                                        <th
+                                                            key={`header-${index}`}
+                                                            className="
+                                                                border px-3 py-2
+                                                                text-left whitespace-nowrap
+                                                                font-semibold text-gray-700
+                                                            "
+                                                        >
+                                                            {header || `Kolom ${index + 1}`}
+                                                        </th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+
+                                            <tbody>
+                                                {updateMutasiRows.map((row, rowIndex) => (
+                                                    <tr
+                                                        key={`row-${row._rowNumber}`}
+                                                        className={
+                                                            rowIndex % 2 === 0
+                                                                ? "bg-white hover:bg-blue-50"
+                                                                : "bg-gray-50 hover:bg-blue-50"
+                                                        }
+                                                    >
+                                                        <td className="border px-3 py-2 text-center text-gray-500">
+                                                            {row._rowNumber}
+                                                        </td>
+
+                                                        {row.cells.map((cell, cellIndex) => (
+                                                            <td
+                                                                key={`cell-${row._rowNumber}-${cellIndex}`}
+                                                                className="
+                                                                    border px-3 py-2
+                                                                    whitespace-nowrap
+                                                                    text-gray-700
+                                                                "
+                                                            >
+                                                                {cell || (
+                                                                    <span className="text-gray-300">
+                                                                        -
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+
+                                                {updateMutasiRows.length === 0 && (
+                                                    <tr>
+                                                        <td
+                                                            colSpan={updateMutasiHeaders.length + 1}
+                                                            className="border px-4 py-8 text-center text-gray-500"
+                                                        >
+                                                            Tidak ada baris data untuk ditampilkan.
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {/* ======================================================
                         RECONCILIATION
                     ======================================================= */}
 
                     {activeTab === "reconciliation" && (
-
                     <>
 
                         {/* ==================================================
@@ -5263,360 +6132,249 @@ export default function Receipt() {
                                 </div>
 
                             </div>
-
-
+                            
                             {/* ==================================================
-                                CONTROL
+                                CONTROL REKONSILIASI
                             =================================================== */}
 
-                            <div className="
-                                grid
-                                grid-cols-1
-                                lg:grid-cols-3
-                                gap-4
-                                items-end
-                            ">
+                            <div className="space-y-5">
 
+                                {/* BARIS UTAMA: JENIS, REKENING, TOMBOL */}
+                                <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-end">
 
-                                {/* ==================================================
-                                    JENIS REKON
-                                =================================================== */}
+                                    {/* JENIS REKONSILIASI */}
+                                    <div className="min-w-0 lg:col-span-4">
+                                        <label className="mb-2 block text-sm font-semibold text-gray-700">
+                                            Jenis Rekonsiliasi
+                                        </label>
 
-                                <div>
-
-                                    <label className="
-                                        block
-                                        text-xs
-                                        font-semibold
-                                        text-gray-600
-                                        mb-2
-                                    ">
-                                        Jenis Rekonsiliasi
-                                    </label>
-
-
-                                    <div className="
-                                        grid
-                                        grid-cols-2
-                                        gap-2
-                                    ">
-
-
-                                        {/* ==================================================
-                                            FRANCHISE
-                                        =================================================== */}
-
-                                        <button
-                                            type="button"
-
-                                            onClick={() =>
-                                                handleReconTypeChange("FRC")
-                                            }
-
-                                            disabled={
-                                                loading
-                                            }
-
-                                            className={`
-                                                px-4
-                                                py-3
-                                                rounded-lg
-                                                border
-                                                font-semibold
-                                                text-sm
-                                                transition
-
-                                                ${
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleReconTypeChange("FRC")}
+                                                disabled={loading}
+                                                className={`flex min-h-11 items-center justify-center rounded-lg border px-3 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
                                                     reconType === "FRC"
+                                                        ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                                                        : "border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50"
+                                                }`}
+                                            >
+                                                Franchise
+                                            </button>
 
-                                                        ? `
-                                                            bg-blue-600
-                                                            text-white
-                                                            border-blue-600
-                                                        `
-
-                                                        : `
-                                                            bg-white
-                                                            text-gray-700
-                                                            hover:bg-gray-50
-                                                        `
-                                                }
-
-                                                disabled:opacity-50
-                                            `}
-                                        >
-
-                                            Franchise
-
-                                        </button>
-
-
-                                        {/* ==================================================
-                                            REGULER
-                                        =================================================== */}
-
-                                        <button
-                                            type="button"
-
-                                            onClick={() =>
-                                                handleReconTypeChange("REG")
-                                            }
-
-                                            disabled={
-                                                loading
-                                            }
-
-                                            className={`
-                                                px-4
-                                                py-3
-                                                rounded-lg
-                                                border
-                                                font-semibold
-                                                text-sm
-                                                transition
-
-                                                ${
+                                            <button
+                                                type="button"
+                                                onClick={() => handleReconTypeChange("REG")}
+                                                disabled={loading}
+                                                className={`flex min-h-11 items-center justify-center rounded-lg border px-3 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
                                                     reconType === "REG"
-
-                                                        ? `
-                                                            bg-blue-600
-                                                            text-white
-                                                            border-blue-600
-                                                        `
-
-                                                        : `
-                                                            bg-white
-                                                            text-gray-700
-                                                            hover:bg-gray-50
-                                                        `
-                                                }
-
-                                                disabled:opacity-50
-                                            `}
-                                        >
-
-                                            Reguler
-
-                                        </button>
-
+                                                        ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                                                        : "border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50"
+                                                }`}
+                                            >
+                                                Reguler
+                                            </button>
+                                        </div>
                                     </div>
 
-                                </div>
-
-
-                                {/* ==================================================
-                                    REKENING
-                                =================================================== */}
-
-                                <div>
-                                    <label
-                                        className="
-                                            flex
-                                            items-center
-                                            justify-between
-                                            text-xs
-                                            font-semibold
-                                            text-gray-600
-                                            mb-2
-                                        "
-                                    >
-                                        <span>
-                                            {reconType === "FRC"
-                                                ? "Jenis Bank"
-                                                : "Nomor Rekening"}
-                                        </span>
-
-                                        {!loadingAccounts &&
-                                            accounts.length > 0 && (
-                                                <span
-                                                    className="
-                                                        text-xs
-                                                        font-normal
-                                                        text-green-600
-                                                    "
-                                                >
-                                                    {accounts.length}{" "}
-                                                    {reconType === "FRC"
-                                                        ? "jenis bank"
-                                                        : "rekening"}{" "}
-                                                    tersedia
+                                    {/* REKENING / JENIS BANK */}
+                                    <div className="min-w-0 lg:col-span-4">
+                                        <label className="mb-2 flex min-h-5 flex-wrap items-center justify-between gap-2 text-sm font-semibold text-gray-700">
+                                            <span>{reconType === "FRC" ? "Jenis Bank" : "Nomor Rekening"}</span>
+                                            {!loadingAccounts && accounts.length > 0 && (
+                                                <span className="text-xs font-medium text-green-600">
+                                                    {accounts.length} {reconType === "FRC" ? "jenis bank" : "rekening"} tersedia
                                                 </span>
                                             )}
-                                    </label>
+                                        </label>
 
-                                    <select
-                                        value={reconAccount}
-                                        onChange={(event) => {
-                                            const value = event.target.value;
-
-                                            console.log(
-                                                "Rekening dipilih:",
-                                                value
-                                            );
-
-                                            setReconAccount(value);
-
-                                            resetReconciliation();
-                                        }}
-                                        disabled={
-                                            loading ||
-                                            loadingAccounts ||
-                                            !period?.id
-                                        }
-                                        className="
-                                            w-full
-                                            px-3
-                                            py-3
-                                            border
-                                            rounded-lg
-                                            bg-white
-                                            text-sm
-                                            outline-none
-                                            focus:ring-2
-                                            focus:ring-blue-200
-                                            disabled:bg-gray-100
-                                        "
-                                    >
-                                        <option value="ALL">
-                                            {reconType === "FRC"
-                                                ? "Semua Jenis Bank"
-                                                : "Semua Rekening"}
-                                        </option>
-
-                                        {Array.isArray(accounts) &&
-                                            accounts.length > 0 &&
-                                            accounts.map(
-                                                (account, index) => {
-                                                    const value =
-                                                        String(
-                                                            account ?? ""
-                                                        ).trim();
-
-                                                    if (!value) {
-                                                        return null;
-                                                    }
-
-                                                    return (
-                                                        <option
-                                                            key={`${reconType}-${value}-${index}`}
-                                                            value={value}
-                                                        >
-                                                            {value}
-                                                        </option>
-                                                    );
-                                                }
-                                            )
-                                        }
-                                    </select>
-
-                                    {loadingAccounts && (
-                                        <p
-                                            className="
-                                                mt-1
-                                                text-xs
-                                                text-blue-600
-                                                flex
-                                                items-center
-                                                gap-1
-                                            "
+                                        <select
+                                            value={reconAccount}
+                                            onChange={(event) => {
+                                                const value = event.target.value;
+                                                setReconAccount(value);
+                                                resetReconciliation();
+                                            }}
+                                            disabled={loading || loadingAccounts || !period?.id}
+                                            className="min-h-11 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-gray-100"
                                         >
-                                            <FaSyncAlt
-                                                className="animate-spin"
-                                            />
+                                            <option value="ALL">
+                                                {reconType === "FRC" ? "Semua Jenis Bank" : "Semua Rekening"}
+                                            </option>
 
-                                            Memuat{" "}
-                                            {reconType === "FRC"
-                                                ? "jenis bank"
-                                                : "rekening"}
-                                            ...
-                                        </p>
-                                    )}
+                                            {Array.isArray(accounts) && accounts.map((account, index) => {
+                                                const isRegular = reconType === "REG";
+                                                const noRek = isRegular
+                                                    ? String(account?.no_rek ?? "").trim()
+                                                    : String(account ?? "").trim();
+                                                const jnsBank = isRegular ? account?.jns_bank : "";
+                                                const akun = isRegular ? account?.akun : "";
 
-                                    {!loadingAccounts &&
-                                        period?.id &&
-                                        accounts.length === 0 && (
-                                            <p
-                                                className="
-                                                    mt-1
-                                                    text-xs
-                                                    text-red-500
-                                                "
-                                            >
+                                                if (!noRek) return null;
+
+                                                const label = isRegular
+                                                    ? `${jnsBank || "-"} - ${noRek}${akun ? ` (${akun})` : ""}`
+                                                    : noRek;
+
+                                                return (
+                                                    <option key={`${reconType}-${noRek}-${index}`} value={noRek}>
+                                                        {label}
+                                                    </option>
+                                                );
+                                            })}
+                                        </select>
+
+                                        {loadingAccounts && (
+                                            <p className="mt-2 flex items-center gap-2 text-xs text-blue-600">
+                                                <FaSyncAlt className="animate-spin" />
+                                                Memuat {reconType === "FRC" ? "jenis bank" : "rekening"}...
+                                            </p>
+                                        )}
+
+                                        {!loadingAccounts && period?.id && accounts.length === 0 && (
+                                            <p className="mt-2 text-xs text-red-500">
                                                 {reconType === "FRC"
                                                     ? "Tidak ada jenis bank untuk cabang ini."
                                                     : "Tidak ada rekening REG untuk cabang ini."}
                                             </p>
                                         )}
+                                    </div>
+
+                                    {/* TOMBOL JALANKAN REKONSILIASI */}
+                                    <div className="lg:col-span-3 min-w-0">
+                                        <button
+                                            type="button"
+                                            onClick={runReconciliation}
+                                            disabled={
+                                                loading ||
+                                                loadingAccounts ||
+                                                loadingMethods ||
+                                                !period?.id ||
+                                                !reconAccount ||
+                                                reconAccount === "ALL" ||
+                                                (
+                                                    reconType === "REG" &&
+                                                    (
+                                                        !Array.isArray(selectedMethods) ||
+                                                        selectedMethods.length === 0
+                                                    )
+                                                )
+                                            }
+                                            className="inline-flex min-h-11 w-full items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400 lg:w-auto"
+                                        >
+                                            {loading ? (
+                                                <>
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Memproses...
+                                                </>
+                                            ) : loadingAccounts ? (
+                                                <>
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Memuat Rekening...
+                                                </>
+                                            ) : loadingMethods && reconType === "REG" ? (
+                                                <>
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Memuat Metode...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <FaExchangeAlt />
+                                                    Proses Rekonsiliasi
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
                                 </div>
 
+                                {/* METODE REGULER: DI BAWAH BARIS KONTROL */}
+                                {reconType === "REG" && reconAccount !== "ALL" && (
+                                    <section className="rounded-xl border border-gray-200 bg-gray-50/70 p-3 sm:p-4">
+                                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <h3 className="text-sm font-bold text-gray-800">Metode Rekonsiliasi</h3>
+                                                <p className="mt-1 text-xs leading-5 text-gray-500">
+                                                    Seret kartu untuk mengubah urutan. Hapus kartu untuk mengeluarkannya dari proses ini.
+                                                </p>
+                                            </div>
+                                            <span className="inline-flex shrink-0 items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">
+                                                {selectedMethods.length} metode dipilih
+                                            </span>
+                                        </div>
 
-                                {/* ==================================================
-                                    RUN BUTTON
-                                =================================================== */}
-
-                                <div>
-
-                                    <button
-                                        type="button"
-
-                                        onClick={
-                                            runReconciliation
-                                        }
-
-                                        disabled={
-                                            loading ||
-                                            loadingAccounts ||
-                                            !period?.id
-                                        }
-
-                                        className="
-                                            w-full
-                                            px-5
-                                            py-3
-                                            rounded-lg
-                                            bg-blue-600
-                                            hover:bg-blue-700
-                                            text-white
-                                            font-bold
-                                            inline-flex
-                                            items-center
-                                            justify-center
-                                            gap-2
-                                            disabled:bg-gray-400
-                                            transition
-                                        "
-                                    >
-
-                                        {loading ? (
-
-                                            <>
-
-                                                <FaSyncAlt
-                                                    className="
-                                                        animate-spin
-                                                    "
-                                                />
-
-                                                Memproses
-                                                Rekonsiliasi...
-
-                                            </>
-
+                                        {loadingMethods ? (
+                                            <div className="flex min-h-20 items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-6 text-sm text-gray-500">
+                                                <FaSyncAlt className="animate-spin text-blue-600" />
+                                                Memuat metode rekonsiliasi...
+                                            </div>
+                                        ) : selectedMethods.length === 0 ? (
+                                            <div className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-6 text-center">
+                                                <p className="text-sm font-medium text-gray-700">Tidak ada metode yang dipilih.</p>
+                                                <p className="mt-1 text-xs leading-5 text-gray-500">
+                                                    Periksa konfigurasi metode pada tabel setting atau pilih rekening lain.
+                                                </p>
+                                            </div>
                                         ) : (
+                                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                                                {selectedMethods.map((method, index) => (
+                                                    <div
+                                                        key={method.id}
+                                                        draggable={!loading}
+                                                        onDragStart={(event) => {
+                                                            event.dataTransfer.setData("text/plain", String(method.id));
+                                                            event.dataTransfer.effectAllowed = "move";
+                                                        }}
+                                                        onDragOver={(event) => {
+                                                            event.preventDefault();
+                                                            event.dataTransfer.dropEffect = "move";
+                                                        }}
+                                                        onDrop={(event) => {
+                                                            event.preventDefault();
+                                                            const sourceId = event.dataTransfer.getData("text/plain");
+                                                            reorderReconciliationMethods(sourceId, method.id);
+                                                        }}
+                                                        className="flex min-w-0 items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition hover:border-blue-300 hover:shadow-md active:cursor-grabbing"
+                                                    >
+                                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500" title="Seret kartu untuk mengubah urutan">
+                                                            <FaExchangeAlt />
+                                                        </div>
 
-                                            <>
+                                                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-bold text-blue-700">
+                                                            {index + 1}
+                                                        </div>
 
-                                                <FaExchangeAlt />
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="break-words text-sm font-semibold leading-5 text-gray-800">
+                                                                {method.value}
+                                                            </p>
+                                                            <p className="mt-1 truncate text-xs text-gray-500" title={method.sub_category}>
+                                                                {method.sub_category}
+                                                            </p>
+                                                        </div>
 
-                                                Rekonsiliasi
-
-                                            </>
-
+                                                        <button
+                                                            type="button"
+                                                            title="Hapus metode dari pilihan"
+                                                            aria-label={`Hapus metode ${method.value}`}
+                                                            disabled={loading}
+                                                            onClick={() => removeReconciliationMethod(method.id)}
+                                                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        >
+                                                            <FaTrash />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
+                                    </section>
+                                )}
 
-                                    </button>
-
-                                </div>
+                                {/* KETERANGAN METODE TERPILIH */}
+                                {reconType === "REG" && reconAccount !== "ALL" && !loadingMethods && selectedMethods.length > 0 && (
+                                    <p className="text-xs text-gray-500">
+                                        {selectedMethods.length} metode akan digunakan sesuai urutan kartu.
+                                    </p>
+                                )}
 
                             </div>
 
@@ -5771,7 +6529,7 @@ export default function Receipt() {
 
                                         Pilih Franchise atau Reguler,
                                         pilih rekening atau Semua Rekening,
-                                        kemudian klik Jalankan Rekonsiliasi.
+                                        kemudian klik Rekonsiliasi.
 
                                     </p>
 
@@ -6522,10 +7280,7 @@ export default function Receipt() {
                                                     }
                                                 }
 
-                                                placeholder="
-                                                    Cari reff, no receipt,
-                                                    no mutasi, rekening...
-                                                "
+                                                placeholder="Cari..."
 
                                                 className="
                                                     w-full
@@ -7313,18 +8068,7 @@ export default function Receipt() {
                                                                                     ">
 
                                                                                         <div>
-                                                                                            ID:
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    item.receipt_id ||
-                                                                                                    "-"
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            No:
+                                                                                            Receipt Number :
                                                                                             {" "}
                                                                                             <strong>
                                                                                                 {
@@ -7335,7 +8079,7 @@ export default function Receipt() {
                                                                                         </div>
 
                                                                                         <div>
-                                                                                            Tanggal:
+                                                                                            Receipt Date :
                                                                                             {" "}
                                                                                             {
                                                                                                 formatDate(
@@ -7345,16 +8089,16 @@ export default function Receipt() {
                                                                                         </div>
 
                                                                                         <div>
-                                                                                            Rekening:
+                                                                                            No Rekening :
                                                                                             {" "}
                                                                                             {
-                                                                                                item.remittance_bank_account ||
+                                                                                                item.no_rek ||
                                                                                                 "-"
                                                                                             }
                                                                                         </div>
 
                                                                                         <div>
-                                                                                            Nominal:
+                                                                                            Amount :
                                                                                             {" "}
                                                                                             <strong>
                                                                                                 {
@@ -7366,7 +8110,7 @@ export default function Receipt() {
                                                                                         </div>
 
                                                                                         <div>
-                                                                                            Status:
+                                                                                            Receipt Status :
                                                                                             {" "}
                                                                                             {
                                                                                                 item.receipt_status ||
@@ -7375,24 +8119,18 @@ export default function Receipt() {
                                                                                         </div>
 
                                                                                         <div>
-                                                                                            State:
+                                                                                            Receipt State :
                                                                                             {" "}
                                                                                             {
                                                                                                 item.receipt_state ||
                                                                                                 "-"
                                                                                             }
                                                                                         </div>
-
+                                                                                        
                                                                                         <div>
-                                                                                            Reff:
+                                                                                            comments :
                                                                                             {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    item.receipt_reff ||
-                                                                                                    item.reff ||
-                                                                                                    "-"
-                                                                                                }
-                                                                                            </strong>
+                                                                                            {item.receipts?.[0]?.comments || "-"}
                                                                                         </div>
 
                                                                                     </div>
@@ -7546,341 +8284,189 @@ export default function Receipt() {
                     ======================================================= */}
 
                     {activeTab === "download" && (
+                        <div className="w-full px-1 space-y-2">
 
-                        <div className="
-                            w-full
-                            px-1
-                            space-y-2
-                        ">
                             {/* HEADER */}
-
-                            <div className="
-                                bg-white
-                                rounded-xl
-                                border
-                                shadow-sm
-                                p-5
-                            ">
-
-                                <div className="
-                                    flex
-                                    items-center
-                                    gap-3
-                                ">
-
+                            <div className="bg-white rounded-xl border shadow-sm p-5">
+                                <div className="flex items-center gap-3">
                                     <div className="
-                                        w-11
-                                        h-11
-                                        rounded-xl
-                                        bg-green-100
-                                        text-green-600
-                                        flex
-                                        items-center
-                                        justify-center
+                                        w-11 h-11 rounded-xl
+                                        bg-green-100 text-green-600
+                                        flex items-center justify-center
                                     ">
-
-                                        <FaDownload
-                                            className="
-                                                text-xl
-                                            "
-                                        />
-
+                                        <FaDownload className="text-xl" />
                                     </div>
 
-
                                     <div>
-
-                                        <h2 className="
-                                            font-bold
-                                            text-lg
-                                        ">
+                                        <h2 className="font-bold text-lg">
                                             Download Hasil Rekonsiliasi
                                         </h2>
 
-                                        <p className="
-                                            text-sm
-                                            text-gray-500
-                                            mt-0.5
-                                        ">
-                                            Download hasil rekonsiliasi
-                                            berdasarkan jenis rekonsiliasi.
+                                        <p className="text-sm text-gray-500 mt-0.5">
+                                            Download hasil rekonsiliasi berdasarkan jenis bank.
                                         </p>
-
                                     </div>
-
                                 </div>
-
                             </div>
 
                             {/* DOWNLOAD OPTIONS */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-                            <div className="
-                                grid
-                                grid-cols-1
-                                md:grid-cols-2
-                                gap-4
-                            ">
-
-
-                                {/* ==================================================
-                                    FRANCHISE
-                                =================================================== */}
-
+                                {/* FRANCHISE */}
                                 <div className="
-                                    bg-white
-                                    rounded-xl
-                                    border
-                                    shadow-sm
-                                    overflow-hidden
+                                    bg-white rounded-xl border
+                                    shadow-sm overflow-hidden
                                 ">
-
-                                    <div className="
-                                        px-5
-                                        py-4
-                                        border-b
-                                        bg-purple-50
-                                    ">
-
-                                        <div className="
-                                            flex
-                                            items-center
-                                            gap-3
-                                        ">
-
+                                    <div className="px-5 py-4 border-b bg-purple-50">
+                                        <div className="flex items-center gap-3">
                                             <div className="
-                                                w-10
-                                                h-10
-                                                rounded-lg
-                                                bg-purple-100
-                                                text-purple-600
-                                                flex
-                                                items-center
-                                                justify-center
+                                                w-10 h-10 rounded-lg
+                                                bg-purple-100 text-purple-600
+                                                flex items-center justify-center
                                             ">
-
                                                 <FaExchangeAlt />
-
                                             </div>
 
-
                                             <div>
-
-                                                <h3 className="
-                                                    font-bold
-                                                    text-gray-800
-                                                ">
+                                                <h3 className="font-bold text-gray-800">
                                                     Rekonsiliasi Franchise
                                                 </h3>
 
-                                                <p className="
-                                                    text-xs
-                                                    text-gray-500
-                                                    mt-0.5
-                                                ">
-                                                    Hasil rekonsiliasi
-                                                    Franchise
+                                                <p className="text-xs text-gray-500 mt-0.5">
+                                                    Hasil rekonsiliasi Franchise
                                                 </p>
-
                                             </div>
-
                                         </div>
-
                                     </div>
 
-
-                                    <div className="
-                                        p-5
-                                    ">
-
-                                        <p className="
-                                            text-sm
-                                            text-gray-600
-                                            mb-4
-                                        ">
-                                            Download seluruh hasil
-                                            rekonsiliasi Franchise
+                                    <div className="p-5">
+                                        <p className="text-sm text-gray-600 mb-4">
+                                            Download hasil rekonsiliasi Franchise
                                             untuk periode aktif.
                                         </p>
-
 
                                         <button
                                             type="button"
                                             onClick={() =>
-                                                handleDownloadReconciliation(
-                                                    "FRC"
-                                                )
+                                                handleDownloadReconciliation("FRC")
                                             }
                                             disabled={
+                                                downloadLoading.FRC ||
+                                                downloadLoading.REG ||
+                                                !cabang ||
+                                                !period?.id
+                                            }
+                                            className="
+                                                w-full inline-flex items-center
+                                                justify-center gap-2 px-4 py-2.5
+                                                rounded-lg bg-purple-600
+                                                hover:bg-purple-700 text-white
+                                                text-sm font-semibold transition
+                                                disabled:bg-gray-400
+                                                disabled:cursor-not-allowed
+                                            "
+                                        >
+                                            {downloadLoading.FRC ? (
+                                                <>
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Menyiapkan File Franchise...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <FaFileExcel />
+                                                    Download Franchise
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* REGULER */}
+                                <div className="
+                                    bg-white rounded-xl border
+                                    shadow-sm overflow-hidden
+                                ">
+                                    <div className="px-5 py-4 border-b bg-blue-50">
+                                        <div className="flex items-center gap-3">
+                                            <div className="
+                                                w-10 h-10 rounded-lg
+                                                bg-blue-100 text-blue-600
+                                                flex items-center justify-center
+                                            ">
+                                                <FaExchangeAlt />
+                                            </div>
+
+                                            <div>
+                                                <h3 className="font-bold text-gray-800">
+                                                    Rekonsiliasi Reguler
+                                                </h3>
+
+                                                <p className="text-xs text-gray-500 mt-0.5">
+                                                    Hasil rekonsiliasi Reguler
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-5">
+                                        <p className="text-sm text-gray-600 mb-4">
+                                            Download hasil rekonsiliasi Reguler
+                                            untuk periode aktif.
+                                        </p>
+
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                handleDownloadReconciliation("REG")
+                                            }
+                                            disabled={
+                                                downloadLoading.REG ||
                                                 downloadLoading.FRC ||
                                                 !cabang ||
                                                 !period?.id
                                             }
                                             className="
-                                                w-full
-                                                inline-flex
-                                                items-center
-                                                justify-center
-                                                gap-2
-                                                px-4
-                                                py-2.5
-                                                rounded-lg
-                                                bg-purple-600
-                                                hover:bg-purple-700
-                                                text-white
-                                                text-sm
-                                                font-semibold
-                                                transition
+                                                w-full inline-flex items-center
+                                                justify-center gap-2 px-4 py-2.5
+                                                rounded-lg bg-blue-600
+                                                hover:bg-blue-700 text-white
+                                                text-sm font-semibold transition
                                                 disabled:bg-gray-400
                                                 disabled:cursor-not-allowed
                                             "
                                         >
-
-                                            {downloadLoading.FRC ? (
-
+                                            {downloadLoading.REG ? (
                                                 <>
-                                                    <FaSyncAlt
-                                                        className="
-                                                            animate-spin
-                                                        "
-                                                    />
-
-                                                    Menyiapkan File...
-
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Menyiapkan File Reguler...
                                                 </>
-
                                             ) : (
-
                                                 <>
                                                     <FaFileExcel />
-
-                                                    Download Franchise
-
+                                                    Download Reguler
                                                 </>
-
                                             )}
-
                                         </button>
-
                                     </div>
-
-                                </div>
-
-
-                                {/* ==================================================
-                                    REGULER
-                                =================================================== */}
-
-                                <div className="
-                                    bg-white
-                                    rounded-xl
-                                    border
-                                    shadow-sm
-                                    overflow-hidden
-                                ">
-
-                                    <div className="
-                                        px-5
-                                        py-4
-                                        border-b
-                                        bg-blue-50
-                                    ">
-
-                                        <div className="
-                                            flex
-                                            items-center
-                                            gap-3
-                                        ">
-
-                                            <div className="
-                                                w-10
-                                                h-10
-                                                rounded-lg
-                                                bg-blue-100
-                                                text-blue-600
-                                                flex
-                                                items-center
-                                                justify-center
-                                            ">
-
-                                                <FaExchangeAlt />
-
-                                            </div>
-
-
-                                            <div>
-
-                                                <h3 className="
-                                                    font-bold
-                                                    text-gray-800
-                                                ">
-                                                    Rekonsiliasi Reguler
-                                                </h3>
-
-                                                <p className="
-                                                    text-xs
-                                                    text-gray-500
-                                                    mt-0.5
-                                                ">
-                                                    Hasil rekonsiliasi
-                                                    Reguler
-                                                </p>
-
-                                            </div>
-
-                                        </div>
-
-                                    </div>
-
-
-                                    <div className="
-                                        p-5
-                                    ">
-
-                                        <p className="
-                                            text-sm
-                                            text-gray-600
-                                            mb-4
-                                        ">
-                                            Download seluruh hasil
-                                            rekonsiliasi Reguler
-                                            untuk periode aktif.
-                                        </p>
-
-
-                                        <button
-                                            type="button"
-                                            disabled={true}
-                                            className="
-                                                w-full
-                                                inline-flex
-                                                items-center
-                                                justify-center
-                                                gap-2
-                                                px-4
-                                                py-2.5
-                                                rounded-lg
-                                                bg-gray-300
-                                                text-gray-500
-                                                text-sm
-                                                font-semibold
-                                                cursor-not-allowed
-                                                opacity-70
-                                            "
-                                        >
-                                            <FaFileExcel />
-
-                                            Download Reguler (Coming Soon)
-                                        </button>
-
-                                    </div>
-
                                 </div>
 
                             </div>
 
-                        </div>
+                            {/* VALIDASI */}
+                            {(!cabang || !period?.id) && (
+                                <div className="
+                                    rounded-lg border border-amber-200
+                                    bg-amber-50 p-3 text-sm text-amber-800
+                                ">
+                                    <FaInfoCircle className="inline mr-2" />
+                                    Pilih cabang dan pastikan periode aktif tersedia
+                                    sebelum mengunduh hasil rekonsiliasi.
+                                </div>
+                            )}
 
+                        </div>
                     )}
+
                 </div>
 
             </div>

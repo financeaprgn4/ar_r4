@@ -4,377 +4,249 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Database\QueryException;
 use Throwable;
 
 class BankController extends Controller
 {
     /**
-     * GET /api/bank?cabang=Yogyakarta
+     * Mengambil daftar rekening bank berdasarkan cabang.
      */
     public function index(Request $request)
     {
+        $validator = Validator::make($request->all(), [
+            'cabang' => ['required', 'string', 'max:15'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => $validator->errors()->first(),
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+
         try {
-
-            $cabang = trim(
-                (string) $request->query('cabang', '')
-            );
-
-            if ($cabang === '') {
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Parameter cabang wajib diisi.',
-                    'data' => [],
-                ], 422);
-            }
-
+            $cabang = trim($request->input('cabang'));
 
             $data = DB::table('bank')
                 ->where('cabang', $cabang)
-                ->orderBy('bank')
-                ->orderBy('jns_bank')
-                ->orderBy('no_rek')
-                ->get([
-                    'id',
-                    'cabang',
-                    'bank',
-                    'jns_bank',
-                    'no_rek',
-                    'akun',
-                    'ce',
-                    'site',
-                    'bank_name',
-                    'acc_num',
-                    'receipt_method',
-                ]);
-
+                ->orderBy('id', 'desc')
+                ->get();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Data rekening berhasil diambil.',
-                'data' => $data,
-            ]);
+                'message' => 'Data rekening bank berhasil diambil.',
+                'data'    => $data,
+            ], 200);
 
         } catch (Throwable $e) {
-
-            \Log::error(
-                'BANK INDEX ERROR',
-                [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'cabang' => $request->query('cabang'),
-                ]
-            );
+            report($e);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal mengambil data rekening bank.',
-                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-
     /**
-     * POST /api/bank
+     * Menambahkan rekening bank baru.
      */
     public function store(Request $request)
     {
+        $validator = Validator::make($request->all(), [
+            'cabang'        => ['required', 'string', 'max:15'],
+            'bank'          => ['required', 'string', 'max:100'],
+            'jns_bank'       => ['required', 'string', 'max:15'],
+            'no_rek'        => ['required', 'string', 'max:100'],
+            'akun'          => ['required', 'string', 'max:6'],
+
+            'ce'            => ['nullable', 'string', 'max:1'],
+            'site'          => ['nullable', 'string', 'max:4'],
+            'bank_name'     => ['nullable', 'string'],
+            'acc_num'       => ['nullable', 'string'],
+            'receipt_method'=> ['nullable', 'string'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => $validator->errors()->first(),
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+
         try {
+            $payload = $this->prepareBankData(
+                $validator->validated()
+            );
 
-            $validated = $request->validate([
+            $id = DB::table('bank')->insertGetId($payload);
 
-                'cabang' => 'required|string|max:15',
-
-                'bank' => 'required|string|max:100',
-
-                'jns_bank' => 'required|string|max:100',
-
-                'no_rek' => 'required|string|max:100',
-
-                'akun' => 'required|string|max:6',
-
-                'ce' => 'required|string|max:1',
-
-                'site' => 'required|string|max:4',
-
-                'bank_name' => 'required|string',
-
-                'acc_num' => 'required|string',
-
-                'receipt_method' => 'required|string',
-
-            ]);
-
-
-            $validated['jns_bank'] =
-                strtoupper(trim($validated['jns_bank']));
-
-            $validated['site'] =
-                strtoupper(trim($validated['site']));
-
-
-            $id = DB::table('bank')->insertGetId([
-                'cabang' => trim($validated['cabang']),
-                'bank' => trim($validated['bank']),
-                'jns_bank' => $validated['jns_bank'],
-                'no_rek' => trim($validated['no_rek']),
-                'akun' => trim($validated['akun']),
-                'ce' => trim($validated['ce']),
-                'site' => $validated['site'],
-                'bank_name' => trim($validated['bank_name']),
-                'acc_num' => trim($validated['acc_num']),
-                'receipt_method' => trim($validated['receipt_method']),
-            ]);
-
-
-            $data = DB::table('bank')
+            $bank = DB::table('bank')
                 ->where('id', $id)
                 ->first();
 
-
             return response()->json([
                 'success' => true,
-                'message' => 'Rekening berhasil ditambahkan.',
-                'data' => $data,
+                'message' => 'Data rekening berhasil ditambahkan.',
+                'data'    => $bank,
             ], 201);
 
-        } catch (Throwable $e) {
-
-            \Log::error(
-                'BANK STORE ERROR',
-                [
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                ]
-            );
+        } catch (QueryException $e) {
+            report($e);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Rekening gagal ditambahkan.',
-                'error' => $e->getMessage(),
+                'message' => 'Gagal menambahkan rekening ke database.',
+            ], 500);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat menambahkan rekening.',
             ], 500);
         }
     }
 
-
     /**
-     * GET /api/bank/{id}
+     * Memperbarui rekening bank berdasarkan ID.
      */
-    public function show($id)
+    public function update(Request $request, $id)
     {
-        try {
+        $validator = Validator::make($request->all(), [
+            'cabang'         => ['required', 'string', 'max:15'],
+            'bank'           => ['required', 'string', 'max:100'],
+            'jns_bank'       => ['required', 'string', 'max:15'],
+            'no_rek'         => ['required', 'string', 'max:100'],
+            'akun'           => ['required', 'string', 'max:6'],
 
-            $data = DB::table('bank')
+            'ce'             => ['nullable', 'string', 'max:1'],
+            'site'           => ['nullable', 'string', 'max:4'],
+            'bank_name'      => ['nullable', 'string'],
+            'acc_num'        => ['nullable', 'string'],
+            'receipt_method' => ['nullable', 'string'],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => $validator->errors()->first(),
+                'errors'  => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $existing = DB::table('bank')
                 ->where('id', $id)
                 ->first();
 
-
-            if (!$data) {
-
+            if (!$existing) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Data rekening tidak ditemukan.',
+                    'message' => 'Data rekening bank tidak ditemukan.',
                 ], 404);
             }
 
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Data rekening ditemukan.',
-                'data' => $data,
-            ]);
-
-        } catch (Throwable $e) {
-
-            \Log::error(
-                'BANK SHOW ERROR',
-                [
-                    'id' => $id,
-                    'message' => $e->getMessage(),
-                ]
+            $payload = $this->prepareBankData(
+                $validator->validated()
             );
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal mengambil data rekening.',
-                'error' => $e->getMessage(),
-            ], 500);
-        }
-    }
-
-
-    /**
-     * PUT /api/bank/{id}
-     */
-    public function update(
-        Request $request,
-        $id
-    ) {
-        try {
-
-            $validated = $request->validate([
-
-                'cabang' => 'required|string|max:15',
-
-                'bank' => 'required|string|max:100',
-
-                'jns_bank' => 'required|string|max:100',
-
-                'no_rek' => 'required|string|max:100',
-
-                'akun' => 'required|string|max:6',
-
-                'ce' => 'required|string|max:1',
-
-                'site' => 'required|string|max:4',
-
-                'bank_name' => 'required|string',
-
-                'acc_num' => 'required|string',
-
-                'receipt_method' => 'required|string',
-
-            ]);
-
-
-            $exists = DB::table('bank')
-                ->where('id', $id)
-                ->exists();
-
-
-            if (!$exists) {
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Data rekening tidak ditemukan.',
-                ], 404);
-            }
-
-
-            $validated['jns_bank'] =
-                strtoupper(trim($validated['jns_bank']));
-
-            $validated['site'] =
-                strtoupper(trim($validated['site']));
-
 
             DB::table('bank')
                 ->where('id', $id)
-                ->update([
+                ->update($payload);
 
-                    'cabang' =>
-                        trim($validated['cabang']),
-
-                    'bank' =>
-                        trim($validated['bank']),
-
-                    'jns_bank' =>
-                        $validated['jns_bank'],
-
-                    'no_rek' =>
-                        trim($validated['no_rek']),
-
-                    'akun' =>
-                        trim($validated['akun']),
-
-                    'ce' =>
-                        trim($validated['ce']),
-
-                    'site' =>
-                        $validated['site'],
-
-                    'bank_name' =>
-                        trim($validated['bank_name']),
-
-                    'acc_num' =>
-                        trim($validated['acc_num']),
-
-                    'receipt_method' =>
-                        trim($validated['receipt_method']),
-                ]);
-
-
-            $data = DB::table('bank')
+            $bank = DB::table('bank')
                 ->where('id', $id)
                 ->first();
 
-
             return response()->json([
                 'success' => true,
-                'message' => 'Rekening berhasil diubah.',
-                'data' => $data,
-            ]);
+                'message' => 'Data rekening berhasil diubah.',
+                'data'    => $bank,
+            ], 200);
 
-        } catch (Throwable $e) {
-
-            \Log::error(
-                'BANK UPDATE ERROR',
-                [
-                    'id' => $id,
-                    'message' => $e->getMessage(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                ]
-            );
+        } catch (QueryException $e) {
+            report($e);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Rekening gagal diubah.',
-                'error' => $e->getMessage(),
+                'message' => 'Gagal memperbarui rekening di database.',
+            ], 500);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat memperbarui rekening.',
             ], 500);
         }
     }
 
-
     /**
-     * DELETE /api/bank/{id}
+     * Menghapus rekening bank berdasarkan ID.
      */
     public function destroy($id)
     {
         try {
-
-            $exists = DB::table('bank')
-                ->where('id', $id)
-                ->exists();
-
-
-            if (!$exists) {
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Data rekening tidak ditemukan.',
-                ], 404);
-            }
-
-
-            DB::table('bank')
+            $deleted = DB::table('bank')
                 ->where('id', $id)
                 ->delete();
 
+            if (!$deleted) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Data rekening bank tidak ditemukan.',
+                ], 404);
+            }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Rekening berhasil dihapus.',
-            ]);
+                'message' => 'Data rekening berhasil dihapus.',
+            ], 200);
 
-        } catch (Throwable $e) {
-
-            \Log::error(
-                'BANK DELETE ERROR',
-                [
-                    'id' => $id,
-                    'message' => $e->getMessage(),
-                ]
-            );
+        } catch (QueryException $e) {
+            report($e);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Rekening gagal dihapus.',
-                'error' => $e->getMessage(),
+                'message' => 'Gagal menghapus rekening dari database.',
+            ], 500);
+
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Terjadi kesalahan saat menghapus rekening.',
             ], 500);
         }
+    }
+
+    /**
+     * Menyiapkan data sesuai kolom tabel bank.
+     *
+     * Kolom opsional pada tabel menggunakan string kosong
+     * jika nilainya tidak diberikan atau bernilai null.
+     */
+    private function prepareBankData(array $data): array
+    {
+        return [
+            'cabang'         => trim($data['cabang']),
+            'bank'           => trim($data['bank']),
+            'jns_bank'       => trim($data['jns_bank']),
+            'no_rek'         => trim($data['no_rek']),
+            'akun'           => trim($data['akun']),
+            'ce'             => trim($data['ce'] ?? ''),
+            'site'           => trim($data['site'] ?? ''),
+            'bank_name'      => trim($data['bank_name'] ?? ''),
+            'acc_num'        => trim($data['acc_num'] ?? ''),
+            'receipt_method' => trim($data['receipt_method'] ?? ''),
+        ];
     }
 }

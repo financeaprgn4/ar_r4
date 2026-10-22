@@ -2013,21 +2013,13 @@ class StatementController extends Controller
                             'no_transaksi'  => false
                         ];
 
-                    }
+                    }else {
 
                     /*
                     ==========================================================
                     BSI FRC
                     ==========================================================
                     */
-                    else {
-
-                        /*
-                        ----------------------------------------------------------
-                        NORMALISASI NOMOR REKENING
-                        ----------------------------------------------------------
-                        */
-
                         $no_rek = preg_replace(
                             '/[^0-9]/',
                             '',
@@ -3144,334 +3136,317 @@ class StatementController extends Controller
                     DB::table($tableDetail)->insert($chunk);
 
                 }
-
+                                
                 /*
-                ==========================================================
-                UPDATE RULE
-                ==========================================================
+                |--------------------------------------------------------------------------
+                | UPDATE DEPT / SITE / RECONCILED BERDASARKAN DATABASE
+                |--------------------------------------------------------------------------
                 */
-
-                $updateRules = [
-
-                    /*
-                    ======================================================
-                    BCA REG
-                    ======================================================
-                    */
-
-                    "BCA_REG" => [
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%TARIKAN%",
-                                "%TRSF E-BANKING DB%",
-                                "FLAZZ BCA TOPUP%",
-                                "FLAZZZ BCA ADM%"
-                            ],
-                            "update" => [
-                                "reconciled" => "Y"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%SENT DR MDN_BCA%"
-                            ],
-                            "update" => [
-                                "reconciled" => "",
-                                "dept" => "HO"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%ND - LAINNYA%"
-                            ],
-                            "update" => [
-                                "reconciled" => "",
-                                "dept" => "CABANG"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "FLAZZ BCA TOPUP%",
-                                "FLAZZ BCA ADM%",
-                                "%DB OTOMATIS KOR FLAZZ%"
-                            ],
-                            "update" => [
-                                "dept" => "VIR"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%DB OTOMATIS KBCINDOMAR SMEMFTS%"
-                            ],
-                            "update" => [
-                                "dept" => "HRD"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%TRSF UNTUK ATS%",
-                                "%TRSF E-BANKING%INDOMARCO PRISMATA%"
-                            ],
-                            "update" => [
-                                "dept" => "HO"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%TRSF UNTUK ATS KE%"
-                            ],
-                            "update" => [
-                                "dept" => "ATS"
-                            ]
-                        ],
-
-                        [
-                            "field" => "cr",
-                            "like" => [
-                                "%KARTU KREDIT MID%",
-                                "%KR OTOMATIS KOR DEBIT%",
-                                "%KR OTOMATIS MID%DDR%",
-                                "%KR OTOMATIS MID%REDEEM%",
-                                "%KR OTOMATIS TANGGAL%DDR%",
-                                "%KOR FLAZZ BCA%",
-                                "%KR OTOMATIS TANGGAL%FTB%"
-                            ],
-                            "update" => [
-                                "dept" => "VIR"
-                            ]
-                        ],
-
-                        [
-                            "field" => "cr",
-                            "like" => [
-                                "%TRSF DARI ATS DARI%"
-                            ],
-                            "update" => [
-                                "dept" => "ATS"
-                            ]
-                        ]
-
-                    ],
-
-                    /*
-                    ======================================================
-                    BCA FRC
-                    ======================================================
-                    */
-
-                    "BCA_FRC" => null, // sementara sama dengan REG nanti bisa dipisah jika berbeda
-
-                    /*
-                    ======================================================
-                    INA
-                    ======================================================
-                    */
-
-                    "INA PERDANA_REG" => [
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%PINBUK%",
-                                "%1000238968%"
-                            ],
-                            "update" => [
-                                "dept" => "HO"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%SEL%KRG%"
-                            ],
-                            "update" => [
-                                "dept" => "CABANG"
-                            ]
-                        ]
-
-                    ],
-                    
-                    /*
-                    ======================================================
-                    MANDIRI REG
-                    ======================================================
-                    */
-                    "MANDIRI_REG" => [
-                        /*
-                        ==========================================================
-                        DEBIT
-                        ==========================================================
-                        */
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%SENT DR MDN_MDR01 KE HO%"
-                            ],
-                            "update" => [
-                                "dept" => "HO"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%MCM Inhouse%",
-                                "%MCM Outw%"
-                            ],
-                            "update" => [
-                                "reconciled" => "Y"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%DbSalaryKtComp%"
-                            ],
-                            "update" => [
-                                "dept" => "HRD"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%AD Tagihan%"
-                            ],
-                            "update" => [
-                                "dept" => "GA"
-                            ]
-                        ],
-
-                        /*
-                        ==========================================================
-                        CREDIT
-                        ==========================================================
-                        */
-
-                        [
-                            "field" => "cr",
-                            "like" => [
-                                "%MCM InhouseTrf%DARI INDOMARCO PRISMATAMA%"
-                            ],
-                            "update" => [
-                                "dept" => "ATS"
-                            ]
-                        ]
-
-                    ],
-
-                    /*
-                    ======================================================
-                    BRI REG
-                    ======================================================
-                    */
-                    "BRI_REG" => [
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%TOPUP TUNAI%"
-                            ],
-                            "update" => [
-                                "dept" => "VIR"
-                            ]
-                        ],
-
-                        [
-                            "field" => "db",
-                            "like" => [
-                                "%CMSPOOL%"
-                            ],
-                            "update" => [
-                                "dept" => "HO"
-                            ]
-                        ],
-
-                        [
-                            "field" => "cr",
-                            "like" => [
-                                "%CMSPOOL%"
-                            ],
-                            "update" => [
-                                "dept" => "ATS"
-                            ]
-                        ],
-
-                        [
-                            "field" => "cr",
-                            "like" => [
-                                "TT1%",
-                                "CC %",
-                                "SETD%",
-                                "OnUs%",
-                                "OffUs%",
-                                "EMONEY%",
-                                "FTT%"
-                            ],
-                            "update" => [
-                                "dept" => "VIR",
-                                "reconciled" => "Y"
-                            ]
-                        ]
-
-                    ],
-                ];
-
-                /*
-                ==========================================================
-                UPDATE DEPT / RECONCILED
-                ==========================================================
-                */
-
+                
                 $key = "{$bank}_{$site}";
 
-                if (!empty($updateRules[$key])) {
+                $rules = DB::table('mutasi_update_rules')
+                    ->where('bank_site', $key)
+                    ->orderBy('id')
+                    ->get();
 
-                    foreach ($updateRules[$key] as $rule) {
+                foreach ($rules as $rule) {
 
-                        $query = DB::table($tableDetail)
-                            ->where("src", $filename)
-                            ->where($rule["field"], "!=", 0);
+                    /*
+                    |--------------------------------------------------------------------------
+                    | VALIDASI FIELD
+                    |--------------------------------------------------------------------------
+                    */
 
-                        $query->where(function ($q) use ($rule) {
-
-                            foreach ($rule["like"] as $i => $like) {
-
-                                if ($i == 0) {
-
-                                    $q->where("remark", "LIKE", $like);
-
-                                } else {
-
-                                    $q->orWhere("remark", "LIKE", $like);
-
-                                }
-
-                            }
-
-                        });
-
-                        $query->update($rule["update"]);
-
+                    if (!in_array($rule->field, ['db', 'cr'], true)) {
+                        continue;
                     }
 
+                    $pattern = trim((string) ($rule->pattern ?? ''));
+                    $excludePattern = trim((string) ($rule->exclude_pattern ?? ''));
+
+                    $hasIdSetor = !empty($rule->id_setor_field);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | VALIDASI PATTERN
+                    |--------------------------------------------------------------------------
+                    | Rule biasa wajib memiliki pattern.
+                    | Rule ekstraksi boleh memiliki pattern kosong.
+                    */
+
+                    if ($pattern === '' && !$hasIdSetor) {
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | DATA UPDATE DARI RULE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $updateData = [];
+
+                    if ($rule->dept_value !== null) {
+                        $updateData['dept'] = $rule->dept_value;
+                    }
+
+                    if ($rule->reconciled_value !== null) {
+                        $updateData['reconciled'] = $rule->reconciled_value;
+                    }
+
+                    // Site tetap, misalnya site_value = TH7M.
+                    if ($rule->site_value !== null) {
+                        $updateData['site'] = $rule->site_value;
+                    }
+
+                    if (empty($updateData) && !$hasIdSetor) {
+                        continue;
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | QUERY DASAR TRANSAKSI
+                    |--------------------------------------------------------------------------
+                    */
+
+                    $query = DB::table($tableDetail)
+                        ->where('src', $filename)
+                        ->where($rule->field, '!=', 0);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | FILTER PATTERN
+                    |--------------------------------------------------------------------------
+                    | Pattern digunakan untuk menentukan remark yang harus cocok.
+                    */
+
+                    if ($pattern !== '') {
+                        $query->where('remark', 'LIKE', $pattern);
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | FILTER EXCLUDE PATTERN
+                    |--------------------------------------------------------------------------
+                    | Exclude pattern digunakan untuk mengecualikan remark tertentu.
+                    |
+                    | Contoh:
+                    | pattern         = %JEMPUTAN%
+                    | exclude_pattern = %SLS%
+                    |
+                    | Hasil:
+                    | remark LIKE '%JEMPUTAN%'
+                    | AND remark NOT LIKE '%SLS%'
+                    */
+
+                    if ($excludePattern !== '') {
+                        $query->where('remark', 'NOT LIKE', $excludePattern);
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | RULE DENGAN EKSTRAKSI SITE DINAMIS
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if ($hasIdSetor) {
+
+                        $sourceField = trim((string) $rule->id_setor_field);
+
+                        if (!in_array($sourceField, ['remark', 'remark1'], true)) {
+                            continue;
+                        }
+
+                        $method = strtoupper(trim(
+                            (string) ($rule->id_setor_method ?? '')
+                        ));
+
+                        $length = (int) ($rule->id_setor_length ?? 0);
+                        $start  = (int) ($rule->id_setor_start ?? 0);
+
+                        if (
+                            !in_array($method, ['LEFT', 'RIGHT', 'MID'], true)
+                            || $length <= 0
+                            || ($method === 'MID' && $start < 1)
+                        ) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | SUMBER SITE
+                        |--------------------------------------------------------------------------
+                        | MASTER_SETOR = cari site melalui master_setor.
+                        | REMARK       = hasil ekstraksi langsung menjadi site.
+                        | REMARK1      = hasil ekstraksi langsung menjadi site.
+                        | NULL         = default MASTER_SETOR untuk kompatibilitas.
+                        */
+
+                        $siteSource = strtoupper(trim(
+                            (string) ($rule->site_source ?? 'MASTER_SETOR')
+                        ));
+
+                        if (!in_array(
+                            $siteSource,
+                            ['MASTER_SETOR', 'REMARK', 'REMARK1'],
+                            true
+                        )) {
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | AMBIL TRANSAKSI SESUAI FILTER RULE
+                        |--------------------------------------------------------------------------
+                        | Filter pattern dan exclude_pattern sudah diterapkan
+                        | sebelum transaksi diambil.
+                        */
+
+                        $rows = $query
+                            ->select('id', 'remark', 'remark1')
+                            ->get();
+
+                        foreach ($rows as $row) {
+
+                            $sourceValue = (string) ($row->{$sourceField} ?? '');
+
+                            if ($sourceValue === '') {
+                                continue;
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | EKSTRAKSI NILAI
+                            |--------------------------------------------------------------------------
+                            */
+
+                            switch ($method) {
+
+                                case 'LEFT':
+                                    $extractedValue = substr(
+                                        $sourceValue,
+                                        0,
+                                        $length
+                                    );
+                                    break;
+
+                                case 'RIGHT':
+                                    $extractedValue = substr(
+                                        $sourceValue,
+                                        -$length
+                                    );
+                                    break;
+
+                                case 'MID':
+                                    // Posisi MID database dimulai dari 1.
+                                    $extractedValue = substr(
+                                        $sourceValue,
+                                        $start - 1,
+                                        $length
+                                    );
+                                    break;
+
+                                default:
+                                    $extractedValue = '';
+                                    break;
+                            }
+
+                            $extractedValue = trim($extractedValue);
+
+                            if ($extractedValue === '') {
+                                continue;
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | SIAPKAN DATA UPDATE
+                            |--------------------------------------------------------------------------
+                            */
+
+                            $rowUpdate = $updateData;
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | SUMBER SITE: REMARK / REMARK1
+                            |--------------------------------------------------------------------------
+                            | Hasil ekstraksi langsung dipakai sebagai site.
+                            | Tidak perlu query master_setor.
+                            */
+
+                            if (
+                                ($siteSource === 'REMARK' && $sourceField === 'remark')
+                                || ($siteSource === 'REMARK1' && $sourceField === 'remark1')
+                            ) {
+
+                                $rowUpdate['site'] = $extractedValue;
+
+                            } elseif ($siteSource === 'MASTER_SETOR') {
+
+                                /*
+                                |--------------------------------------------------------------------------
+                                | SUMBER SITE: MASTER_SETOR
+                                |--------------------------------------------------------------------------
+                                */
+
+                                $master = DB::table('master_setor')
+                                    ->where('cabang', $cabang)
+                                    ->where('bank', $bank)
+                                    ->where('id_setor', $extractedValue)
+                                    ->first(['site']);
+
+                                /*
+                                | Untuk rule SLS, jangan mengubah dept atau site jika
+                                | id_setor tidak ditemukan atau site master kosong.
+                                | Berlaku untuk semua bank.
+                                */
+
+                                if (
+                                    strtoupper(trim(
+                                        (string) ($rule->dept_value ?? '')
+                                    )) === 'SLS'
+                                    && (
+                                        !$master
+                                        || trim((string) ($master->site ?? '')) === ''
+                                    )
+                                ) {
+                                    continue;
+                                }
+
+                                // Jika master ditemukan, gunakan site dari master.
+                                if ($master && $master->site !== null) {
+                                    $rowUpdate['site'] = $master->site;
+                                }
+                            }
+
+                            /*
+                            |--------------------------------------------------------------------------
+                            | UPDATE SATU TRANSAKSI
+                            |--------------------------------------------------------------------------
+                            */
+
+                            if (!empty($rowUpdate)) {
+                                DB::table($tableDetail)
+                                    ->where('id', $row->id)
+                                    ->where('src', $filename)
+                                    ->update($rowUpdate);
+                            }
+                        }
+
+                    } else {
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | RULE BIASA: UPDATE MASSAL
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (empty($updateData)) {
+                            continue;
+                        }
+
+                        $affectedRows = $query->update($updateData);
+                    }
                 }
 
                 /* ============ REKAP TRANSAKSI & UNREC ============ */
@@ -3783,16 +3758,14 @@ class StatementController extends Controller
                 ->where(function ($q) use ($prefix) {
 
                     $q->whereNull($prefix . 'reconciled')
-                        ->orWhere($prefix . 'reconciled', '')
-                        ->orWhere($prefix . 'reconciled', '0');
+                        ->orWhere($prefix . 'reconciled', '');
 
                 })
 
                 ->where(function ($q) use ($prefix) {
 
                     $q->whereNull($prefix . 'dept')
-                        ->orWhere($prefix . 'dept', '')
-                        ->orWhere($prefix . 'dept', '0');
+                        ->orWhere($prefix . 'dept', '');
 
                 });
 
@@ -4263,24 +4236,22 @@ class StatementController extends Controller
         $request->validate([
             'files'   => 'required',
             'files.*' => 'required|file|mimes:csv,txt',
-            'cabang'  => 'required|string|max:50'
+            'cabang'  => 'required|string|max:50',
         ]);
 
         $cabang = trim($request->cabang);
 
         $errors = [];
-
         $insertData = [];
         $updateData = [];
 
         $inserted = 0;
-        $updated  = 0;
-        $skipped  = 0;
+        $updated = 0;
+        $skipped = 0;
 
         DB::beginTransaction();
 
         try {
-
             /*
             |--------------------------------------------------------------------------
             | Ambil periode aktif
@@ -4295,7 +4266,6 @@ class StatementController extends Controller
                 );
             }
 
-
             /*
             |--------------------------------------------------------------------------
             | Ambil konfigurasi bank
@@ -4304,39 +4274,30 @@ class StatementController extends Controller
 
             $bankConfigs = $this->getBankConfigurations($cabang);
 
-
             /*
             |--------------------------------------------------------------------------
-            | Mapping Remittance Bank Account
+            | Mapping rekening
             |--------------------------------------------------------------------------
             */
 
             $validAccounts = [];
 
             foreach ($bankConfigs as $bank) {
-
-                $account = trim(
-                    $bank->no_rek ?? ''
-                );
+                $account = trim($bank->no_rek ?? '');
 
                 if ($account !== '') {
                     $validAccounts[$account] = $bank;
                 }
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | Ambil Receipt Existing
+            | Ambil receipt existing
             |--------------------------------------------------------------------------
-            |
-            | REFF tetap diambil karena dibutuhkan ketika receipt
-            | berubah menjadi Reversed.
-            |
             */
 
             $existingReceipt = DB::table('receipt')
-                ->select(
+                ->select([
                     'id',
                     'receipt_number',
                     'remittance_bank_account',
@@ -4344,28 +4305,23 @@ class StatementController extends Controller
                     'receipt_date',
                     'receipt_status',
                     'receipt_state',
-                    'reff'
-                )
-                ->whereBetween(
-                    'receipt_date',
-                    [
-                        $activePeriod->start_date,
-                        $activePeriod->end_date
-                    ]
-                )
+                    'reff',
+                ])
+                ->whereBetween('receipt_date', [
+                    $activePeriod->start_date,
+                    $activePeriod->end_date,
+                ])
                 ->get();
-
 
             /*
             |--------------------------------------------------------------------------
-            | Mapping Receipt Existing
+            | Mapping receipt existing
             |--------------------------------------------------------------------------
             */
 
             $existingMap = [];
 
             foreach ($existingReceipt as $receipt) {
-
                 $account = trim(
                     $receipt->remittance_bank_account ?? ''
                 );
@@ -4374,40 +4330,30 @@ class StatementController extends Controller
                     $receipt->receipt_number ?? ''
                 );
 
-                $key =
-                    $account
-                    . '|'
-                    . $number;
+                $key = $account . '|' . $number;
 
                 $existingMap[$key] = $receipt;
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | LOOP FILE
+            | Loop file
             |--------------------------------------------------------------------------
             */
 
             foreach ($request->file('files') as $file) {
-
-                $handle = fopen(
-                    $file->getRealPath(),
-                    'r'
-                );
+                $handle = fopen($file->getRealPath(), 'r');
 
                 if (!$handle) {
-
                     $errors[] = [
                         'file' => $file->getClientOriginalName(),
                         'issues' => [
-                            'File tidak dapat dibaca.'
-                        ]
+                            'File tidak dapat dibaca.',
+                        ],
                     ];
 
                     continue;
                 }
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -4415,32 +4361,22 @@ class StatementController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                $header = fgetcsv(
-                    $handle,
-                    0,
-                    "|"
-                );
+                $header = fgetcsv($handle, 0, '|');
 
                 if (!$header) {
-
                     fclose($handle);
 
                     $errors[] = [
                         'file' => $file->getClientOriginalName(),
                         'issues' => [
-                            'Header CSV tidak ditemukan.'
-                        ]
+                            'Header CSV tidak ditemukan.',
+                        ],
                     ];
 
                     continue;
                 }
 
-
-                $header = array_map(
-                    'trim',
-                    $header
-                );
-
+                $header = array_map('trim', $header);
 
                 $expectedHeader = [
                     'Receipt Method',
@@ -4454,134 +4390,97 @@ class StatementController extends Controller
                     'State',
                     'Comments',
                     'Activity',
-                    'Paid By'
+                    'Paid By',
                 ];
 
-
                 if ($header !== $expectedHeader) {
-
                     fclose($handle);
 
                     $errors[] = [
                         'file' => $file->getClientOriginalName(),
                         'issues' => [
-                            'Format Header CSV tidak sesuai.'
-                        ]
+                            'Format Header CSV tidak sesuai.',
+                        ],
                     ];
 
                     continue;
                 }
 
-
                 /*
                 |--------------------------------------------------------------------------
-                | Loop Data
+                | Loop data CSV
                 |--------------------------------------------------------------------------
                 */
 
                 $line = 1;
 
-                while (
-                    ($row = fgetcsv(
-                        $handle,
-                        0,
-                        "|"
-                    )) !== false
-                ) {
-
+                while (($row = fgetcsv($handle, 0, '|')) !== false) {
                     $line++;
 
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Validasi jumlah kolom
-                    |--------------------------------------------------------------------------
-                    */
-
                     if (count($row) !== 12) {
-
                         $errors[] = [
                             'file' => $file->getClientOriginalName(),
                             'issues' => [
-                                "Baris {$line} jumlah kolom tidak sesuai."
-                            ]
+                                "Baris {$line} jumlah kolom tidak sesuai.",
+                            ],
                         ];
 
                         continue;
                     }
 
-
                     /*
                     |--------------------------------------------------------------------------
-                    | Ambil Data
+                    | Ambil data
                     |--------------------------------------------------------------------------
                     */
 
-                    $receiptMethod =
-                        trim($row[0]);
+                    $receiptMethod = trim($row[0]);
+                    $remittanceBankAccount = trim($row[1]);
+                    $receiptNumber = trim($row[2]);
 
-                    $remittanceBankAccount =
-                        trim($row[1]);
+                    $receiptAmount = str_replace(
+                        ',',
+                        '',
+                        trim($row[3])
+                    );
 
-                    $receiptNumber =
-                        trim($row[2]);
-
-                    $receiptAmount =
-                        str_replace(
-                            ",",
-                            "",
-                            trim($row[3])
-                        );
-
-                    $receiptDate =
-                        trim($row[4]);
-
-                    $glDate =
-                        trim($row[5]);
-
-                    $receiptType =
-                        trim($row[6]);
-
-                    $receiptStatus =
-                        trim($row[7]);
-
-                    $receiptState =
-                        trim($row[8]);
-
-                    $comments =
-                        trim($row[9]);
-
-                    $activity =
-                        trim($row[10]);
-
-                    $paidBy =
-                        trim($row[11]);
-
+                    $receiptDate = trim($row[4]);
+                    $glDate = trim($row[5]);
+                    $receiptType = trim($row[6]);
+                    $receiptStatus = trim($row[7]);
+                    $receiptState = trim($row[8]);
+                    $comments = trim($row[9]);
+                    $activity = trim($row[10]);
+                    $paidBy = trim($row[11]);
 
                     /*
                     |--------------------------------------------------------------------------
-                    | Validasi Remittance Bank Account
+                    | Validasi rekening dan tentukan tabel mutasi
                     |--------------------------------------------------------------------------
                     */
 
-                    if (
-                        !isset(
-                            $validAccounts[
-                                $remittanceBankAccount
-                            ]
-                        )
-                    ) {
-
+                    if (!isset($validAccounts[$remittanceBankAccount])) {
                         $errors[] = [
                             'file' => $file->getClientOriginalName(),
                             'issues' => [
-                                "Baris {$line}: Remittance Bank Account '{$remittanceBankAccount}' tidak terdaftar pada cabang {$cabang}."
-                            ]
+                                "Baris {$line}: Remittance Bank Account '{$remittanceBankAccount}' tidak terdaftar pada cabang {$cabang}.",
+                            ],
                         ];
 
                         continue;
                     }
 
+                    $bankConfig = $validAccounts[$remittanceBankAccount];
+
+                    $site = strtoupper(
+                        trim((string) ($bankConfig->site ?? ''))
+                    );
+
+                    // REG menggunakan mutasi_detail.
+                    // Site selain REG, termasuk NULL, menggunakan mutasi_detail_frc.
+                    $mutasiTable = $site === 'REG'
+                        ? 'mutasi_detail'
+                        : 'mutasi_detail_frc';
 
                     /*
                     |--------------------------------------------------------------------------
@@ -4590,20 +4489,15 @@ class StatementController extends Controller
                     */
 
                     try {
+                        $receiptDate = Carbon::createFromFormat(
+                            'd/m/y',
+                            $receiptDate
+                        )->format('Y-m-d');
 
-                        $receiptDate =
-                            Carbon::createFromFormat(
-                                'd/m/y',
-                                $receiptDate
-                            )->format('Y-m-d');
-
-
-                        $glDate =
-                            Carbon::createFromFormat(
-                                'd/m/y',
-                                $glDate
-                            )->format('Y-m-d');
-
+                        $glDate = Carbon::createFromFormat(
+                            'd/m/y',
+                            $glDate
+                        )->format('Y-m-d');
 
                         /*
                         |--------------------------------------------------------------------------
@@ -4612,186 +4506,119 @@ class StatementController extends Controller
                         */
 
                         if (
-                            $receiptDate <
-                                $activePeriod->start_date
-                            ||
-                            $receiptDate >
-                                $activePeriod->end_date
+                            $receiptDate < $activePeriod->start_date ||
+                            $receiptDate > $activePeriod->end_date
                         ) {
-
                             $errors[] = [
                                 'file' => $file->getClientOriginalName(),
                                 'issues' => [
-                                    "Baris {$line}: Receipt Date {$receiptDate} berada di luar periode aktif Mutasi."
-                                ]
+                                    "Baris {$line}: Receipt Date {$receiptDate} berada di luar periode aktif Mutasi.",
+                                ],
                             ];
 
                             continue;
                         }
-
                     } catch (\Throwable $e) {
-
                         $errors[] = [
                             'file' => $file->getClientOriginalName(),
                             'issues' => [
-                                "Baris {$line}: format tanggal salah."
-                            ]
+                                "Baris {$line}: format tanggal salah.",
+                            ],
                         ];
 
                         continue;
                     }
 
-
                     /*
                     |--------------------------------------------------------------------------
-                    | Composite Key
+                    | Composite key
                     |--------------------------------------------------------------------------
                     */
 
-                    $key =
-                        $remittanceBankAccount
-                        . '|'
-                        . $receiptNumber;
-
+                    $key = $remittanceBankAccount . '|' . $receiptNumber;
 
                     /*
                     |--------------------------------------------------------------------------
-                    | CEK RECEIPT SUDAH ADA
+                    | Cek receipt sudah ada
                     |--------------------------------------------------------------------------
                     */
 
-                    if (
-                        isset(
-                            $existingMap[$key]
-                        )
-                    ) {
-
-                        $old =
-                            $existingMap[$key];
-
+                    if (isset($existingMap[$key])) {
+                        $old = $existingMap[$key];
 
                         /*
                         |--------------------------------------------------------------------------
-                        | Normalisasi Status
+                        | Normalisasi status
                         |--------------------------------------------------------------------------
                         */
 
-                        $newStatus =
-                            strtoupper(
-                                trim(
-                                    (string)
-                                    $receiptStatus
-                                )
-                            );
+                        $newStatus = strtoupper(
+                            trim((string) $receiptStatus)
+                        );
 
-                        $oldStatus =
-                            strtoupper(
-                                trim(
-                                    (string)
-                                    $old->receipt_status
-                                )
-                            );
-
+                        $oldStatus = strtoupper(
+                            trim((string) $old->receipt_status)
+                        );
 
                         /*
                         |--------------------------------------------------------------------------
-                        | REFF RECEIPT LAMA
+                        | Reff receipt lama
                         |--------------------------------------------------------------------------
                         */
 
-                        $oldReff =
-                            trim(
-                                (string)
-                                (
-                                    $old->reff
-                                    ?? ''
-                                )
-                            );
-
+                        $oldReff = trim(
+                            (string) ($old->reff ?? '')
+                        );
 
                         /*
                         |--------------------------------------------------------------------------
-                        | RECEIPT SUDAH REVERSED
+                        | Receipt lama sudah REVERSED
                         |--------------------------------------------------------------------------
                         */
 
-                        if (
-                            $oldStatus === 'REVERSED'
-                        ) {
-
-                            if (
-                                $oldReff !== ''
-                            ) {
-
+                        if ($oldStatus === 'REVERSED') {
+                            if ($oldReff !== '') {
                                 $updateData[] = [
+                                    'id' => $old->id,
+                                    'receipt_status' => 'Reversed',
+                                    'receipt_state' => $receiptState,
+                                    'clear_trx' => true,
+                                    'clear_reff' => true,
+                                    'old_reff' => $oldReff,
 
-                                    'id' =>
-                                        $old->id,
-
-                                    'receipt_status' =>
-                                        'Reversed',
-
-                                    'receipt_state' =>
-                                        $receiptState,
-
-                                    'clear_trx' =>
-                                        true,
-
-                                    'clear_reff' =>
-                                        true,
-
-                                    'old_reff' =>
-                                        $oldReff
+                                    // Informasi tabel dan rekening.
+                                    'mutasi_table' => $mutasiTable,
+                                    'no_rek' => $remittanceBankAccount,
                                 ];
 
                                 $updated++;
-
                             } else {
-
                                 $skipped++;
                             }
 
                             continue;
                         }
 
-
                         /*
                         |--------------------------------------------------------------------------
-                        | CEK PERUBAHAN STATUS / STATE
+                        | Cek perubahan status / state
                         |--------------------------------------------------------------------------
                         */
 
-                        $statusChanged =
-                            strcasecmp(
-                                $old->receipt_status,
-                                $receiptStatus
-                            ) !== 0;
+                        $statusChanged = strcasecmp(
+                            (string) $old->receipt_status,
+                            $receiptStatus
+                        ) !== 0;
 
+                        $stateChanged = strcasecmp(
+                            (string) $old->receipt_state,
+                            $receiptState
+                        ) !== 0;
 
-                        $stateChanged =
-                            strcasecmp(
-                                $old->receipt_state,
-                                $receiptState
-                            ) !== 0;
-
-
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Tidak ada perubahan
-                        |--------------------------------------------------------------------------
-                        */
-
-                        if (
-                            !$statusChanged
-                            &&
-                            !$stateChanged
-                        ) {
-
+                        if (!$statusChanged && !$stateChanged) {
                             $skipped++;
-
                             continue;
                         }
-
 
                         /*
                         |--------------------------------------------------------------------------
@@ -4799,100 +4626,48 @@ class StatementController extends Controller
                         |--------------------------------------------------------------------------
                         */
 
-                        $isReversed =
-                            $newStatus === 'REVERSED';
-
+                        $isReversed = $newStatus === 'REVERSED';
 
                         $updateData[] = [
+                            'id' => $old->id,
+                            'receipt_status' => $receiptStatus,
+                            'receipt_state' => $receiptState,
+                            'clear_trx' => $isReversed,
+                            'clear_reff' => $isReversed,
+                            'old_reff' => $isReversed
+                                ? $oldReff
+                                : null,
 
-                            'id' =>
-                                $old->id,
-
-                            'receipt_status' =>
-                                $receiptStatus,
-
-                            'receipt_state' =>
-                                $receiptState,
-
-                            'clear_trx' =>
-                                $isReversed,
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | FIX REVERSED REFF
-                            |--------------------------------------------------------------------------
-                            */
-
-                            'clear_reff' =>
-                                $isReversed,
-
-                            /*
-                            |--------------------------------------------------------------------------
-                            | Simpan REFF lama sebelum dikosongkan
-                            |--------------------------------------------------------------------------
-                            */
-
-                            'old_reff' =>
-                                $isReversed
-                                    ? $oldReff
-                                    : null
+                            // Informasi tabel dan rekening.
+                            'mutasi_table' => $mutasiTable,
+                            'no_rek' => $remittanceBankAccount,
                         ];
-
 
                         $updated++;
 
                         continue;
                     }
 
-
                     /*
                     |--------------------------------------------------------------------------
-                    | INSERT RECEIPT BARU
+                    | Insert receipt baru
                     |--------------------------------------------------------------------------
                     */
 
                     $insertData[] = [
-
-                        'receipt_method' =>
-                            $receiptMethod,
-
-                        'remittance_bank_account' =>
-                            $remittanceBankAccount,
-
-                        'receipt_number' =>
-                            $receiptNumber,
-
-                        'receipt_amount' =>
-                            $receiptAmount,
-
-                        'receipt_date' =>
-                            $receiptDate,
-
-                        'gl_date' =>
-                            $glDate,
-
-                        'receipt_type' =>
-                            $receiptType,
-
-                        'receipt_status' =>
-                            $receiptStatus,
-
-                        'receipt_state' =>
-                            $receiptState,
-
-                        'comments' =>
-                            $comments,
-
-                        'activity' =>
-                            $activity,
-
-                        'paid_by' =>
-                            $paidBy,
-
-                        'trx_id' =>
-                            ''
+                        'receipt_method' => $receiptMethod,
+                        'remittance_bank_account' => $remittanceBankAccount,
+                        'receipt_number' => $receiptNumber,
+                        'receipt_amount' => $receiptAmount,
+                        'receipt_date' => $receiptDate,
+                        'gl_date' => $glDate,
+                        'receipt_type' => $receiptType,
+                        'receipt_status' => $receiptStatus,
+                        'receipt_state' => $receiptState,
+                        'comments' => $comments,
+                        'activity' => $activity,
+                        'paid_by' => $paidBy,
                     ];
-
 
                     /*
                     |--------------------------------------------------------------------------
@@ -4900,255 +4675,132 @@ class StatementController extends Controller
                     |--------------------------------------------------------------------------
                     */
 
-                    $existingMap[$key] =
-                        (object) [
-
-                            'id' => 0,
-
-                            'receipt_number' =>
-                                $receiptNumber,
-
-                            'remittance_bank_account' =>
-                                $remittanceBankAccount,
-
-                            'receipt_amount' =>
-                                $receiptAmount,
-
-                            'receipt_date' =>
-                                $receiptDate,
-
-                            'receipt_status' =>
-                                $receiptStatus,
-
-                            'receipt_state' =>
-                                $receiptState,
-
-                            'reff' =>
-                                null
-                        ];
-
+                    $existingMap[$key] = (object) [
+                        'id' => 0,
+                        'receipt_number' => $receiptNumber,
+                        'remittance_bank_account' => $remittanceBankAccount,
+                        'receipt_amount' => $receiptAmount,
+                        'receipt_date' => $receiptDate,
+                        'receipt_status' => $receiptStatus,
+                        'receipt_state' => $receiptState,
+                        'reff' => null,
+                    ];
 
                     $inserted++;
                 }
 
-
                 fclose($handle);
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | BULK INSERT RECEIPT
+            | Bulk insert receipt
             |--------------------------------------------------------------------------
             */
 
             if (!empty($insertData)) {
-
-                foreach (
-                    array_chunk(
-                        $insertData,
-                        1000
-                    ) as $chunk
-                ) {
-
-                    DB::table('receipt')
-                        ->insert($chunk);
+                foreach (array_chunk($insertData, 1000) as $chunk) {
+                    DB::table('receipt')->insert($chunk);
                 }
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | UPDATE RECEIPT
+            | Update receipt
             |--------------------------------------------------------------------------
             */
 
             foreach ($updateData as $row) {
-
                 /*
                 |--------------------------------------------------------------------------
-                | FIX REVERSED REFF
+                | Reset reff pada tabel mutasi yang sesuai
                 |--------------------------------------------------------------------------
-                |
-                | Jika status berubah menjadi Reversed, gunakan old_reff
-                | untuk mencari pasangan pada mutasi_detail_frc.
-                |
-                | Reset dilakukan SEBELUM receipt.reff di-null-kan.
-                |
                 */
 
                 if (
-                    isset($row['clear_reff'])
-                    &&
-                    $row['clear_reff'] === true
-                    &&
-                    isset($row['old_reff'])
-                    &&
-                    $row['old_reff'] !== null
-                    &&
-                    $row['old_reff'] !== ''
+                    !empty($row['clear_reff']) &&
+                    !empty($row['old_reff'])
                 ) {
+                    $mutasiTable = $row['mutasi_table'] ?? null;
 
-                    DB::table('mutasi_detail_frc')
-                        ->where(
-                            'reff',
-                            $row['old_reff']
-                        )
+                    // Validasi nama tabel agar hanya tabel yang diizinkan dipakai.
+                    if (!in_array(
+                        $mutasiTable,
+                        ['mutasi_detail', 'mutasi_detail_frc'],
+                        true
+                    )) {
+                        throw new \RuntimeException(
+                            'Tabel mutasi untuk update REVERSED tidak valid.'
+                        );
+                    }
+
+                    DB::table($mutasiTable)
+                        ->where('cabang', $cabang)
+                        ->where('no_rek', $row['no_rek'])
+                        ->where('reff', $row['old_reff'])
                         ->update([
-                            'reff' => null
+                            'reff' => null,
                         ]);
                 }
 
-
                 /*
                 |--------------------------------------------------------------------------
-                | Update Receipt
+                | Update receipt
                 |--------------------------------------------------------------------------
                 */
 
                 $update = [
-
-                    'receipt_status' =>
-                        $row['receipt_status'],
-
-                    'receipt_state' =>
-                        $row['receipt_state']
+                    'receipt_status' => $row['receipt_status'],
+                    'receipt_state' => $row['receipt_state'],
                 ];
 
-
-                /*
-                |--------------------------------------------------------------------------
-                | Jika Reversed -> kosongkan trx_id
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    isset($row['clear_trx'])
-                    &&
-                    $row['clear_trx'] === true
-                ) {
-
-                    $update['trx_id'] = '';
+                if (!empty($row['clear_reff'])) {
+                    $update['reff'] = DB::raw('NULL');
                 }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | FIX REVERSED REFF
-                |--------------------------------------------------------------------------
-                |
-                | Gunakan DB::raw('NULL') supaya yang dikirim ke SQL
-                | benar-benar NULL.
-                |
-                */
-
-                if (
-                    isset($row['clear_reff'])
-                    &&
-                    $row['clear_reff'] === true
-                ) {
-
-                    $update['reff'] =
-                        DB::raw('NULL');
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | UPDATE RECEIPT
-                |--------------------------------------------------------------------------
-                */
 
                 DB::table('receipt')
-                    ->where(
-                        'id',
-                        $row['id']
-                    )
+                    ->where('id', $row['id'])
                     ->update($update);
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | COMMIT
+            | Commit
             |--------------------------------------------------------------------------
             */
 
             DB::commit();
 
-
             /*
             |--------------------------------------------------------------------------
-            | RESPONSE
+            | Response
             |--------------------------------------------------------------------------
             */
 
             return response()->json([
-
-                'success' =>
-                    true,
-
-                'message' =>
-                    "Import Receipt selesai.",
-
-                'inserted' =>
-                    $inserted,
-
-                'updated' =>
-                    $updated,
-
-                'skipped' =>
-                    $skipped,
-
-                'errors' =>
-                    $errors,
-
+                'success' => true,
+                'message' => 'Import Receipt selesai.',
+                'inserted' => $inserted,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'errors' => $errors,
                 'period' => [
-
-                    'periode' =>
-                        $activePeriod->periode
-                        ?? null,
-
-                    'start_date' =>
-                        $activePeriod->start_date,
-
-                    'end_date' =>
-                        $activePeriod->end_date
-                ]
-
+                    'periode' => $activePeriod->periode ?? null,
+                    'start_date' => $activePeriod->start_date,
+                    'end_date' => $activePeriod->end_date,
+                ],
             ]);
-
         } catch (\Throwable $e) {
-
-            /*
-            |--------------------------------------------------------------------------
-            | ROLLBACK
-            |--------------------------------------------------------------------------
-            */
-
             DB::rollBack();
 
-
-            Log::error(
-                'Import Receipt Error',
-                [
-                    'cabang' =>
-                        $cabang,
-
-                    'error' =>
-                        $e->getMessage()
-                ]
-            );
-
+            Log::error('Import Receipt Error', [
+                'cabang' => $cabang,
+                'error' => $e->getMessage(),
+            ]);
 
             return response()->json([
-
-                'success' =>
-                    false,
-
-                'message' =>
-                    $e->getMessage()
-
+                'success' => false,
+                'message' => $e->getMessage(),
             ], 500);
         }
     }
@@ -5170,7 +4822,8 @@ class StatementController extends Controller
             ->select(
                 'no_rek',
                 'jns_bank',
-                'no_rek'
+                'no_rek',
+                'site'
             )
             ->get();
     }
