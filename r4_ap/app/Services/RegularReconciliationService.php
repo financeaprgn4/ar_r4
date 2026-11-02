@@ -19,6 +19,21 @@ class RegularReconciliationService
         ) < self::AMOUNT_TOLERANCE_CENTS;
     }
 
+    private function normalizeMatchText($value): string
+    {
+        $value = strtoupper((string) ($value ?? ''));
+
+        // Hilangkan whitespace, termasuk spasi, tab, dan baris baru.
+        $value = preg_replace('/\s+/u', '', $value) ?? $value;
+
+        // Hilangkan titik, koma, petik satu biasa dan tipografis.
+        return str_replace(
+            ['.', ',', "'", '’', ';','_'],
+            '',
+            $value
+        );
+    }
+
     /**
      * METODE 1: date_amount
      *
@@ -200,11 +215,18 @@ class RegularReconciliationService
      * Reff dibuat berdasarkan tanggal masing-masing transaksi.
      * Contoh: REG-VIR-151026 untuk tanggal 15 Oktober 2026.
      */
+        
     public function reconcileVirtualTransactions(
         string $cabang,
         int $periodId,
         string $account
     ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. DAFTAR ACTIVITY VIRTUAL
+        |--------------------------------------------------------------------------
+        */
+
         $activities = [
             'Beban Bank (DDR) Frc',
             'PIUTANG BCA',
@@ -223,10 +245,20 @@ class RegularReconciliationService
             'Kartu Debit Mandiri',
             'Kartu Kredit Mandiri On Us II',
             'Biaya KK Mandiri On Us',
+            'Biaya Debit Mandiri On Us',
+
+            // Activity tambahan dengan validasi comments.
+            'SELISIH PEMBULATAN (MISC)',
         ];
 
-        // Ambil data sesuai periode, cabang, rekening,
-        // status receipt, dan transaksi yang belum memiliki reff.
+        $miscActivity = 'SELISIH PEMBULATAN (MISC)';
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. LOAD CONTEXT
+        |--------------------------------------------------------------------------
+        */
+
         $context = $this->loadContext(
             $cabang,
             $periodId,
@@ -234,7 +266,15 @@ class RegularReconciliationService
             $activities
         );
 
-        // Hanya mutasi dengan dept VIR.
+        /*
+        |--------------------------------------------------------------------------
+        | 3. FILTER MUTASI
+        |--------------------------------------------------------------------------
+        |
+        | Hanya mutasi dengan dept VIR.
+        |
+        */
+
         $mutasi = $context['mutasi']
             ->filter(function ($row) {
                 return strtoupper(
@@ -243,28 +283,75 @@ class RegularReconciliationService
             })
             ->values();
 
-        $receipts = $context['receipts']->values();
+        /*
+        |--------------------------------------------------------------------------
+        | 4. FILTER RECEIPT
+        |--------------------------------------------------------------------------
+        |
+        | Activity biasa:
+        | Tetap diproses seperti sebelumnya.
+        |
+        | SELISIH PEMBULATAN (MISC):
+        | Comments wajib mengandung VIR atau VIRTUAL.
+        |
+        */
+
+        $receipts = $context['receipts']
+            ->filter(function ($row) use ($miscActivity) {
+
+                $activity = strtoupper(
+                    trim((string) ($row->activity ?? ''))
+                );
+
+                /*
+                * Activity selain MISC tidak memerlukan
+                * pemeriksaan comments tambahan.
+                */
+                if ($activity !== strtoupper($miscActivity)) {
+                    return true;
+                }
+
+                /*
+                * Khusus SELISIH PEMBULATAN (MISC),
+                * comments wajib mengandung VIR atau VIRTUAL.
+                */
+                $comments = strtoupper(
+                    (string) ($row->comments ?? '')
+                );
+
+                return str_contains($comments, 'VIR')
+                    || str_contains($comments, 'VIRTUAL');
+            })
+            ->values();
 
         $updatedMutasi = 0;
         $updatedReceipt = 0;
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. UPDATE TRANSAKSI
+        |--------------------------------------------------------------------------
+        */
 
         DB::transaction(function () use (
             $cabang,
             $account,
             $mutasi,
             $receipts,
+            $activities,
+            $miscActivity,
             &$updatedMutasi,
             &$updatedReceipt
         ) {
+
             /*
             |--------------------------------------------------------------------------
-            | UPDATE MUTASI
+            | 5A. UPDATE MUTASI
             |--------------------------------------------------------------------------
             */
 
             foreach ($mutasi as $row) {
 
-                // Pastikan tanggal tersedia.
                 if (empty($row->tgl)) {
                     continue;
                 }
@@ -293,7 +380,7 @@ class RegularReconciliationService
 
             /*
             |--------------------------------------------------------------------------
-            | UPDATE RECEIPT
+            | 5B. UPDATE RECEIPT
             |--------------------------------------------------------------------------
             */
 
@@ -308,36 +395,63 @@ class RegularReconciliationService
 
                 $affected = DB::table('receipt')
                     ->where('id', $row->id)
-                    ->whereIn('activity', [
-                        'Beban Bank (DDR) Frc',
-                        'PIUTANG BCA',
-                        'AYAT SILANG BCA TARTUN',
-                        'Beban Bank (DDR)',
-                        'TITIPAN PEMILIK KARTU FLAZZ',
-                        'Pendapatan Lain-lain (ICB)',
-                        'IDM BEBAN MDR BRI',
-                        'BRI ON US',
-                        'IDM BEBAN MDR BRI FRC',
-                        'BRI OFF US',
-                        'BIAYA KK BRI (Titipan)',
-                        'Fee Tarik Tunai BRI NEW',
-                        'Biaya KK Mandiri On Us Frc',
-                        'Debit Kartu IDM',
-                        'Kartu Debit Mandiri',
-                        'Kartu Kredit Mandiri On Us II',
-                        'Biaya KK Mandiri On Us',
-                    ])
+                    ->whereIn('activity', $activities)
+
+                    /*
+                    * Pastikan receipt belum memiliki reff.
+                    */
                     ->where(function ($query) {
                         $query->whereNull('reff')
                             ->orWhere('reff', '');
                     })
+
+                    /*
+                    * Khusus SELISIH PEMBULATAN (MISC),
+                    * validasi comments dilakukan kembali di database.
+                    *
+                    * Activity lainnya tidak terpengaruh.
+                    */
+                    ->where(function ($query) use ($miscActivity) {
+
+                        $query->where(
+                            'activity',
+                            '<>',
+                            $miscActivity
+                        );
+
+                        $query->orWhere(function ($subQuery) use (
+                            $miscActivity
+                        ) {
+                            $subQuery
+                                ->where('activity', $miscActivity)
+                                ->where(function ($commentsQuery) {
+                                    $commentsQuery
+                                        ->whereRaw(
+                                            "UPPER(COALESCE(comments, '')) LIKE ?",
+                                            ['%VIR%']
+                                        )
+                                        ->orWhereRaw(
+                                            "UPPER(COALESCE(comments, '')) LIKE ?",
+                                            ['%VIRTUAL%']
+                                        );
+                                });
+                        });
+                    })
+
                     ->update([
                         'reff' => $reff,
                     ]);
 
                 $updatedReceipt += $affected;
             }
+
         }, 3);
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. RETURN HASIL
+        |--------------------------------------------------------------------------
+        */
 
         return [
             'success' => true,
@@ -384,13 +498,16 @@ class RegularReconciliationService
             $periodId,
             $account
         );
-
+    
         $receipts = $context['receipts']->values();
         $mutasi = $context['mutasi']->values();
-
+    
         /*
-        * Kelompok mutasi berdasarkan rekening + tanggal + nominal.
+        |--------------------------------------------------------------------------
+        | 1. Kelompokkan mutasi berdasarkan rekening + tanggal + nominal.
+        |--------------------------------------------------------------------------
         */
+    
         $mutasiGroups = $mutasi->groupBy(
             fn ($row) => $this->buildMatchKey(
                 $row->no_rek,
@@ -398,30 +515,53 @@ class RegularReconciliationService
                 $row->cr
             )
         );
-
+    
         $matches = [];
         $ambiguous = [];
         $usedReceiptIds = [];
         $usedMutasiIds = [];
-
+    
         /*
-        * Proses receipt satu per satu.
+        |--------------------------------------------------------------------------
+        | 2. Proses receipt satu per satu.
+        |--------------------------------------------------------------------------
         */
+    
         foreach ($receipts as $receipt) {
             $key = $this->buildMatchKey(
                 $receipt->remittance_bank_account,
                 $receipt->receipt_date,
                 $receipt->receipt_amount
             );
-
+    
             $candidates = $mutasiGroups->get($key, collect());
-
+    
             /*
-            * Tambahkan syarat remark = comments.
-            * Trim digunakan untuk mengabaikan spasi di awal/akhir.
-            * Perbandingan tetap case-sensitive.
+            |--------------------------------------------------------------------------
+            | 3. Normalisasi comments receipt.
+            |--------------------------------------------------------------------------
+            | Menggunakan helper normalizeMatchText() agar aturan normalisasi
+            | konsisten dengan metode rekonsiliasi lainnya.
             */
-            
+    
+            $normalizedComments = $this->normalizeMatchText(
+                $receipt->comments ?? ''
+            );
+    
+            // Comments kosong tidak boleh digunakan untuk pencocokan remark.
+            if ($normalizedComments === '') {
+                continue;
+            }
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 4. Cari mutasi yang memenuhi seluruh kriteria.
+            |--------------------------------------------------------------------------
+            | - Mutasi belum digunakan.
+            | - Nominal sesuai toleransi.
+            | - Remark sama dengan comments setelah normalisasi.
+            */
+    
             $mutasiRow = $candidates->first(
                 fn ($row) =>
                     !in_array(
@@ -433,62 +573,61 @@ class RegularReconciliationService
                         $receipt->receipt_amount,
                         $row->cr
                     )
-                    && str_replace(
-                        [' ', '.', ',', "'"],
-                        '',
-                        (string) ($row->remark ?? '')
-                    ) === str_replace(
-                        [' ', '.', ',', "'"],
-                        '',
-                        (string) ($receipt->comments ?? '')
+                    && $normalizedComments === $this->normalizeMatchText(
+                        $row->remark ?? ''
                     )
             );
-
-
+    
             if (!$mutasiRow) {
                 continue;
             }
-
+    
             /*
-            * Satu receipt dipasangkan dengan satu mutasi.
+            |--------------------------------------------------------------------------
+            | 5. Buat pasangan satu receipt : satu mutasi.
+            |--------------------------------------------------------------------------
             */
+    
             $matches[] = $this->makeMatch(
                 $receipt,
                 collect([$mutasiRow])
             );
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 6. Tandai ID agar tidak digunakan ulang.
+            |--------------------------------------------------------------------------
+            */
+    
             $usedReceiptIds[] = (string) $receipt->id;
             $usedMutasiIds[] = (string) $mutasiRow->id;
         }
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 7. Simpan hasil rekonsiliasi.
+        |--------------------------------------------------------------------------
+        */
+    
         return $this->finishReconciliation(
             $context,
             'date_amount_remark',
             $matches,
             $ambiguous
         );
-    }
-
-    /**
-     * METODE BARU: sum_date_amount_remark_reverse
-     *
-     * Pola: N receipt : 1 mutasi.
-     *
-     * Kriteria:
-     * - Rekening sama.
-     * - Tanggal sama.
-     * - mutasi_detail.remark = receipt.comments setelah normalisasi.
-     * - Total beberapa receipt harus sama dengan mutasi_detail.cr.
-     * - Receipt dan mutasi yang sudah memiliki reff tidak digunakan.
-     *
-     * Normalisasi teks menghapus:
-     * spasi, titik, koma, dan petik satu.
-     */
+    }      
+        
     public function reconcileSumDateAmountRemarkReverse(
         string $cabang,
         int $periodId,
         string $account
     ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. LOAD CONTEXT
+        |--------------------------------------------------------------------------
+        */
+
         $context = $this->loadContext(
             $cabang,
             $periodId,
@@ -496,18 +635,15 @@ class RegularReconciliationService
         );
 
         /*
-        * Normalisasi remark dan comments.
+        |--------------------------------------------------------------------------
+        | 2. FILTER RECEIPT
+        |--------------------------------------------------------------------------
+        |
+        | Receipt boleh memiliki nominal positif maupun negatif.
+        | Nominal nol tidak diproses.
+        |
         */
-        $normalizeText = static fn ($value) => str_replace(
-            [' ', '.', ',', "'"],
-            '',
-            trim((string) ($value ?? ''))
-        );
 
-        /*
-        * Receipt harus memiliki comments agar dapat dicocokkan.
-        * Nominal receipt harus positif.
-        */
         $receipts = $context['receipts']
             ->filter(fn ($row) =>
                 trim((string) ($row->comments ?? '')) !== ''
@@ -516,9 +652,15 @@ class RegularReconciliationService
             ->values();
 
         /*
-        * Mutasi hanya dengan kredit positif.
-        * Remark tidak boleh kosong.
+        |--------------------------------------------------------------------------
+        | 3. FILTER MUTASI
+        |--------------------------------------------------------------------------
+        |
+        | Mutasi hanya dengan kredit positif.
+        | Remark tidak boleh kosong.
+        |
         */
+
         $mutasi = $context['mutasi']
             ->filter(fn ($row) =>
                 trim((string) ($row->remark ?? '')) !== ''
@@ -527,151 +669,561 @@ class RegularReconciliationService
             ->values();
 
         /*
-        * Kelompok receipt berdasarkan:
-        * rekening + tanggal + comments yang sudah dinormalisasi.
+        |--------------------------------------------------------------------------
+        | 4. KELOMPOKKAN RECEIPT
+        |--------------------------------------------------------------------------
+        |
+        | Key:
+        | rekening + tanggal + comments ternormalisasi.
+        |
         */
+
         $receiptGroups = $receipts->groupBy(
             fn ($row) => $this->buildSiteDateKey(
                 $row->remittance_bank_account,
                 $row->receipt_date,
-                $normalizeText($row->comments)
+                $this->normalizeMatchText($row->comments)
             )
         );
 
         /*
-        * Kelompok mutasi berdasarkan:
-        * rekening + tanggal + remark yang sudah dinormalisasi.
+        |--------------------------------------------------------------------------
+        | 5. KELOMPOKKAN MUTASI
+        |--------------------------------------------------------------------------
+        |
+        | Key:
+        | rekening + tanggal + remark ternormalisasi.
+        |
         */
+
         $mutasiGroups = $mutasi->groupBy(
             fn ($row) => $this->buildSiteDateKey(
                 $row->no_rek,
                 $row->tgl,
-                $normalizeText($row->remark)
+                $this->normalizeMatchText($row->remark)
             )
         );
 
         $matches = [];
-        $usedReceiptIds = [];
-        $usedMutasiIds = [];
 
         /*
-        * Proses setiap kelompok mutasi.
+        |--------------------------------------------------------------------------
+        | 6. BATAS PENCARIAN KOMBINASI
+        |--------------------------------------------------------------------------
+        |
+        | Maksimal jumlah kombinasi yang disimpan.
+        | Digunakan untuk mengendalikan penggunaan memori.
+        |
         */
+
+        $maxStates = 50000;
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. HELPER SUBSET SUM
+        |--------------------------------------------------------------------------
+        |
+        | Mendukung nominal positif dan negatif.
+        |
+        | Contoh:
+        |
+        | Receipt:
+        | 57004
+        | -4
+        |
+        | Kombinasi:
+        | 57004 + (-4) = 57000
+        |
+        | Setiap baris hanya boleh digunakan satu kali.
+        |
+        */
+
+        $buildSubsetMap = function (
+            array $rows,
+            int $minTotal,
+            int $maxTotal
+        ) use ($maxStates): array {
+
+            /*
+            * Nominal 0 digunakan sebagai kondisi awal.
+            */
+            $states = [
+                0 => []
+            ];
+
+            $limitReached = false;
+
+            foreach ($rows as $index => $row) {
+
+                if ($limitReached) {
+                    break;
+                }
+
+                $amount = (int) $row['amount'];
+
+                if ($amount === 0) {
+                    continue;
+                }
+
+                /*
+                * Snapshot agar satu baris tidak digunakan
+                * berulang kali dalam kombinasi yang sama.
+                */
+                $existingStates = $states;
+
+                foreach ($existingStates as $sum => $indexes) {
+
+                    $newSum = (int) $sum + $amount;
+
+                    /*
+                    * Batasi rentang nominal kombinasi.
+                    */
+                    if (
+                        $newSum < $minTotal
+                        || $newSum > $maxTotal
+                    ) {
+                        continue;
+                    }
+
+                    /*
+                    * Simpan hanya satu kombinasi untuk setiap nominal.
+                    */
+                    if (!isset($states[$newSum])) {
+
+                        $states[$newSum] = array_merge(
+                            $indexes,
+                            [$index]
+                        );
+                    }
+
+                    /*
+                    * Hentikan pembentukan kombinasi
+                    * jika batas memori tercapai.
+                    */
+                    if (count($states) >= $maxStates) {
+                        $limitReached = true;
+                        break;
+                    }
+                }
+            }
+
+            /*
+            * Hapus kondisi awal nominal nol.
+            */
+            unset($states[0]);
+
+            return $states;
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. PROSES SETIAP KELOMPOK MUTASI
+        |--------------------------------------------------------------------------
+        */
+
         foreach ($mutasiGroups as $key => $mutasiGroup) {
-            $receiptGroup = $receiptGroups->get($key, collect());
+
+            $receiptGroup = $receiptGroups->get(
+                $key,
+                collect()
+            );
 
             if ($receiptGroup->isEmpty()) {
                 continue;
             }
 
             /*
-            * Akumulasi nominal seluruh receipt dalam kelompok.
-            * Semua receipt dengan rekening, tanggal, dan comments
-            * yang sama dihitung bersama.
+            |--------------------------------------------------------------------------
+            | 8A. SIAPKAN RECEIPT
+            |--------------------------------------------------------------------------
+            |
+            | Nominal negatif tetap dipertahankan.
+            |
             */
-            $availableReceipts = $receiptGroup
-                ->reject(fn ($row) =>
-                    in_array(
-                        (string) $row->id,
-                        $usedReceiptIds,
-                        true
-                    )
-                )
-                ->values();
 
-            if ($availableReceipts->isEmpty()) {
-                continue;
-            }
-
-            $receiptTotalCents = $availableReceipts->sum(
-                fn ($row) => $this->toCents($row->receipt_amount)
-            );
+            $remainingReceipts = $receiptGroup
+                ->map(fn ($row) => [
+                    'row' => $row,
+                    'amount' => $this->toCents(
+                        $row->receipt_amount
+                    ),
+                ])
+                ->values()
+                ->all();
 
             /*
-            * Cari mutasi yang nominal kreditnya tepat sama
-            * dengan akumulasi receipt.
+            |--------------------------------------------------------------------------
+            | 8B. SIAPKAN MUTASI
+            |--------------------------------------------------------------------------
             */
-            $mutasiRow = $mutasiGroup->first(
-                fn ($row) =>
-                    !in_array(
-                        (string) $row->id,
-                        $usedMutasiIds,
-                        true
-                    )
-                    && abs(
-                        $this->toCents($row->cr) - $receiptTotalCents
-                    ) < self::AMOUNT_TOLERANCE_CENTS
-            );
 
-            if (!$mutasiRow) {
-                continue;
-            }
+            $remainingMutasi = $mutasiGroup
+                ->map(fn ($row) => [
+                    'row' => $row,
+                    'amount' => $this->toCents(
+                        $row->cr
+                    ),
+                ])
+                ->values()
+                ->all();
 
             /*
-            * Validasi ulang total receipt dalam satuan sen.
+            |--------------------------------------------------------------------------
+            | 8C. PROSES PENCARIAN BERULANG
+            |--------------------------------------------------------------------------
+            |
+            | Setelah kombinasi ditemukan, baris yang sudah digunakan
+            | dikeluarkan dan pencarian dilanjutkan.
+            |
             */
-            $matchedTotalCents = $availableReceipts->sum(
-                fn ($row) => $this->toCents($row->receipt_amount)
-            );
 
-            if (
-                abs($matchedTotalCents - $this->toCents($mutasiRow->cr))
-                >= self::AMOUNT_TOLERANCE_CENTS
+            while (
+                !empty($remainingReceipts)
+                && !empty($remainingMutasi)
             ) {
-                continue;
-            }
 
-            /*
-            * Semua receipt dan satu mutasi menggunakan reff yang sama.
-            */
-            $reff = 'REG-' . $mutasiRow->id;
+                /*
+                |--------------------------------------------------------------------------
+                | HITUNG BATAS NOMINAL RECEIPT
+                |--------------------------------------------------------------------------
+                |
+                | Karena receipt dapat negatif, jangan menggunakan
+                | total receipt sebagai batas maksimum pencarian.
+                |
+                | Contoh:
+                | 57004 + (-4) = 57000
+                |
+                | Maksimum kombinasi receipt tetap 57004.
+                | Minimum kombinasi receipt adalah -4.
+                |
+                */
 
-            $matches[] = [
-                'receipt_ids' => $availableReceipts
+                $minReceiptSum = 0;
+                $maxReceiptSum = 0;
+
+                foreach ($remainingReceipts as $row) {
+
+                    $amount = $row['amount'];
+
+                    if ($amount < 0) {
+                        $minReceiptSum += $amount;
+                    } else {
+                        $maxReceiptSum += $amount;
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | HITUNG TOTAL MUTASI
+                |--------------------------------------------------------------------------
+                */
+
+                $totalMutasi = array_sum(
+                    array_column($remainingMutasi, 'amount')
+                );
+
+                if ($totalMutasi <= 0) {
+                    break;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8D. BENTUK KOMBINASI RECEIPT
+                |--------------------------------------------------------------------------
+                |
+                | Mendukung kombinasi positif + negatif.
+                |
+                */
+
+                $receiptSubsetMap = $buildSubsetMap(
+                    $remainingReceipts,
+                    $minReceiptSum,
+                    $maxReceiptSum
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8E. BENTUK KOMBINASI MUTASI
+                |--------------------------------------------------------------------------
+                |
+                | Mutasi hanya memiliki nominal positif.
+                |
+                */
+
+                $mutasiSubsetMap = $buildSubsetMap(
+                    $remainingMutasi,
+                    1,
+                    $totalMutasi
+                );
+
+                if (
+                    empty($receiptSubsetMap)
+                    || empty($mutasiSubsetMap)
+                ) {
+                    break;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8F. CARI KOMBINASI TERBAIK
+                |--------------------------------------------------------------------------
+                */
+
+                $bestMatch = null;
+
+                $bestRowsCount = PHP_INT_MAX;
+                $bestDifference = PHP_INT_MAX;
+                $bestAmount = 0;
+
+                foreach (
+                    $receiptSubsetMap as $receiptSum => $receiptIndexes
+                ) {
+
+                    /*
+                    * Receipt dapat memiliki total negatif.
+                    * Namun, total yang dicocokkan harus positif
+                    * karena mutasi hanya memiliki kredit positif.
+                    */
+
+                    $minMutasiSum = max(
+                        1,
+                        (int) $receiptSum
+                            - self::AMOUNT_TOLERANCE_CENTS + 1
+                    );
+
+                    $maxMutasiSum = (int) $receiptSum
+                        + self::AMOUNT_TOLERANCE_CENTS - 1;
+
+                    for (
+                        $mutasiSum = $minMutasiSum;
+                        $mutasiSum <= $maxMutasiSum;
+                        $mutasiSum++
+                    ) {
+
+                        if (!isset($mutasiSubsetMap[$mutasiSum])) {
+                            continue;
+                        }
+
+                        $mutasiIndexes = $mutasiSubsetMap[$mutasiSum];
+
+                        $difference = abs(
+                            (int) $receiptSum - $mutasiSum
+                        );
+
+                        $totalRows = count($receiptIndexes)
+                            + count($mutasiIndexes);
+
+                        $matchedAmount = min(
+                            (int) $receiptSum,
+                            $mutasiSum
+                        );
+
+                        /*
+                        * Prioritas pencocokan:
+                        *
+                        * 1. Jumlah baris paling sedikit.
+                        * 2. Selisih nominal paling kecil.
+                        * 3. Nominal pencocokan paling besar.
+                        */
+
+                        $isBetter =
+                            $totalRows < $bestRowsCount
+                            || (
+                                $totalRows === $bestRowsCount
+                                && $difference < $bestDifference
+                            )
+                            || (
+                                $totalRows === $bestRowsCount
+                                && $difference === $bestDifference
+                                && $matchedAmount > $bestAmount
+                            );
+
+                        if ($isBetter) {
+
+                            $bestRowsCount = $totalRows;
+                            $bestDifference = $difference;
+                            $bestAmount = $matchedAmount;
+
+                            $bestMatch = [
+                                'receipt_indexes' => $receiptIndexes,
+                                'mutasi_indexes' => $mutasiIndexes,
+                                'receipt_total' => (int) $receiptSum,
+                                'mutasi_total' => (int) $mutasiSum,
+                                'difference' => $difference,
+                            ];
+                        }
+                    }
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8G. JIKA TIDAK ADA KOMBINASI
+                |--------------------------------------------------------------------------
+                */
+
+                if (!$bestMatch) {
+                    break;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8H. AMBIL RECEIPT YANG MATCH
+                |--------------------------------------------------------------------------
+                */
+
+                $matchedReceipts = [];
+
+                foreach ($bestMatch['receipt_indexes'] as $index) {
+
+                    $matchedReceipts[] = $remainingReceipts[$index]['row'];
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8I. AMBIL MUTASI YANG MATCH
+                |--------------------------------------------------------------------------
+                */
+
+                $matchedMutasi = [];
+
+                foreach ($bestMatch['mutasi_indexes'] as $index) {
+
+                    $matchedMutasi[] = $remainingMutasi[$index]['row'];
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8J. AMBIL ID
+                |--------------------------------------------------------------------------
+                */
+
+                $receiptIds = collect($matchedReceipts)
                     ->pluck('id')
                     ->values()
-                    ->all(),
+                    ->all();
 
-                'receipt_numbers' => $availableReceipts
-                    ->pluck('receipt_number')
+                $mutasiIds = collect($matchedMutasi)
+                    ->pluck('id')
                     ->values()
-                    ->all(),
+                    ->all();
 
-                'receipt_dates' => $availableReceipts
-                    ->pluck('receipt_date')
-                    ->values()
-                    ->all(),
+                /*
+                * Satu reff untuk seluruh receipt dan mutasi.
+                * Menggunakan ID mutasi pertama sebagai identitas.
+                */
+                $reff = 'REG-' . $mutasiIds[0];
 
-                'receipt_amounts' => $availableReceipts
-                    ->map(fn ($row) => (float) $row->receipt_amount)
-                    ->values()
-                    ->all(),
+                /*
+                |--------------------------------------------------------------------------
+                | 8K. HITUNG TOTAL NOMINAL
+                |--------------------------------------------------------------------------
+                */
 
-                'receipt_amount' => (float) $availableReceipts->sum(
-                    fn ($row) => (float) $row->receipt_amount
-                ),
+                $receiptTotalCents = $bestMatch['receipt_total'];
+                $mutasiTotalCents = $bestMatch['mutasi_total'];
 
-                'comments' => $availableReceipts->first()->comments,
+                /*
+                |--------------------------------------------------------------------------
+                | 8L. SIMPAN HASIL MATCH
+                |--------------------------------------------------------------------------
+                */
 
-                'mutasi_ids' => [$mutasiRow->id],
-                'mutasi_date' => $mutasiRow->tgl,
-                'mutasi_amount' => (float) $mutasiRow->cr,
-                'reff' => $reff,
-            ];
+                $matches[] = [
 
-            /*
-            * Tandai semua receipt agar tidak digunakan lagi.
-            */
-            foreach ($availableReceipts as $receipt) {
-                $usedReceiptIds[] = (string) $receipt->id;
+                    'receipt_ids' => $receiptIds,
+
+                    'receipt_numbers' => collect($matchedReceipts)
+                        ->pluck('receipt_number')
+                        ->values()
+                        ->all(),
+
+                    'receipt_dates' => collect($matchedReceipts)
+                        ->pluck('receipt_date')
+                        ->values()
+                        ->all(),
+
+                    'receipt_amounts' => collect($matchedReceipts)
+                        ->map(fn ($row) =>
+                            (float) $row->receipt_amount
+                        )
+                        ->values()
+                        ->all(),
+
+                    'receipt_amount' => $receiptTotalCents / 100,
+
+                    'comments' => $matchedReceipts[0]->comments,
+
+                    'mutasi_ids' => $mutasiIds,
+
+                    'mutasi_dates' => collect($matchedMutasi)
+                        ->pluck('tgl')
+                        ->values()
+                        ->all(),
+
+                    'mutasi_amounts' => collect($matchedMutasi)
+                        ->map(fn ($row) =>
+                            (float) $row->cr
+                        )
+                        ->values()
+                        ->all(),
+
+                    'mutasi_date' => $matchedMutasi[0]->tgl,
+
+                    'mutasi_amount' => $mutasiTotalCents / 100,
+
+                    'difference' => (
+                        $mutasiTotalCents - $receiptTotalCents
+                    ) / 100,
+
+                    'reff' => $reff,
+                ];
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8M. HAPUS RECEIPT YANG SUDAH DIGUNAKAN
+                |--------------------------------------------------------------------------
+                */
+
+                $usedReceiptIndexes = array_flip(
+                    $bestMatch['receipt_indexes']
+                );
+
+                $remainingReceipts = array_values(
+                    array_filter(
+                        $remainingReceipts,
+                        fn ($row, $index) =>
+                            !isset($usedReceiptIndexes[$index]),
+                        ARRAY_FILTER_USE_BOTH
+                    )
+                );
+
+                /*
+                |--------------------------------------------------------------------------
+                | 8N. HAPUS MUTASI YANG SUDAH DIGUNAKAN
+                |--------------------------------------------------------------------------
+                */
+
+                $usedMutasiIndexes = array_flip(
+                    $bestMatch['mutasi_indexes']
+                );
+
+                $remainingMutasi = array_values(
+                    array_filter(
+                        $remainingMutasi,
+                        fn ($row, $index) =>
+                            !isset($usedMutasiIndexes[$index]),
+                        ARRAY_FILTER_USE_BOTH
+                    )
+                );
             }
-
-            $usedMutasiIds[] = (string) $mutasiRow->id;
         }
 
         /*
-        * Simpan dengan helper N receipt : 1 mutasi yang tersedia.
+        |--------------------------------------------------------------------------
+        | 9. SIMPAN HASIL REKONSILIASI
+        |--------------------------------------------------------------------------
         */
+
         return $this->finishReverseReconciliation(
             $context,
             'sum_date_amount_remark_reverse',
@@ -687,9 +1239,17 @@ class RegularReconciliationService
         $context = $this->loadContext(
             $cabang,
             $periodId,
-            $account,
+            $account
         );
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 1. FILTER RECEIPT
+        |--------------------------------------------------------------------------
+        | Hanya receipt dengan comments diawali PELUNASAN KURSET.
+        |--------------------------------------------------------------------------
+        */
+    
         $receipts = $context['receipts']
             ->filter(fn ($row) =>
                 str_starts_with(
@@ -698,13 +1258,27 @@ class RegularReconciliationService
                 )
             )
             ->values();
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 2. FILTER MUTASI FAS
+        |--------------------------------------------------------------------------
+        */
+    
         $mutasi = $context['mutasi']
             ->filter(fn ($row) =>
                 strtoupper(trim((string) ($row->dept ?? ''))) === 'FAS'
             )
             ->values();
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 3. KELOMPOKKAN MUTASI
+        |--------------------------------------------------------------------------
+        | Berdasarkan rekening + tanggal + nominal + site.
+        |--------------------------------------------------------------------------
+        */
+    
         $mutasiGroups = $mutasi->groupBy(
             fn ($row) => $this->buildSlsMatchKey(
                 $row->no_rek,
@@ -713,26 +1287,62 @@ class RegularReconciliationService
                 $row->site
             )
         );
-
+    
         $matches = [];
         $usedMutasiIds = [];
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 4. CARI PASANGAN RECEIPT DAN MUTASI
+        |--------------------------------------------------------------------------
+        */
+    
         foreach ($receipts as $receipt) {
-            // Site FAS diambil dari 4 karakter paling kanan comments.
-            $site = substr(
-                trim((string) ($receipt->comments ?? '')),
-                -4
+    
+            /*
+            |--------------------------------------------------------------------------
+            | SITE RECEIPT
+            |--------------------------------------------------------------------------
+            | Prioritas:
+            | 1. Gunakan receipt.site jika tersedia.
+            | 2. Jika kosong, gunakan 4 karakter paling kanan comments.
+            |--------------------------------------------------------------------------
+            */
+    
+            $site = trim(
+                (string) ($receipt->site ?? '')
             );
-
+    
+            if ($site === '') {
+                $site = substr(
+                    trim((string) ($receipt->comments ?? '')),
+                    -4
+                );
+            }
+    
+            $site = strtoupper(trim($site));
+    
+            /*
+            |--------------------------------------------------------------------------
+            | BENTUK KEY RECEIPT
+            |--------------------------------------------------------------------------
+            */
+    
             $key = $this->buildSlsMatchKey(
                 $receipt->remittance_bank_account,
                 $receipt->receipt_date,
                 $receipt->receipt_amount,
                 $site
             );
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | CARI MUTASI DENGAN KEY YANG SAMA
+            |--------------------------------------------------------------------------
+            */
+    
             $candidates = $mutasiGroups->get($key, collect());
-
+    
             $mutasiRow = $candidates->first(
                 fn ($row) =>
                     !in_array(
@@ -745,144 +1355,165 @@ class RegularReconciliationService
                         $row->cr
                     )
             );
-
+    
             if (!$mutasiRow) {
                 continue;
             }
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | BENTUK DATA MATCH
+            |--------------------------------------------------------------------------
+            */
+    
             $matches[] = $this->makeMatch(
                 $receipt,
                 collect([$mutasiRow])
             );
-
+    
+            /*
+            |--------------------------------------------------------------------------
+            | TANDAI MUTASI SUDAH DIGUNAKAN
+            |--------------------------------------------------------------------------
+            */
+    
             $usedMutasiIds[] = (string) $mutasiRow->id;
         }
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 5. SIMPAN HASIL REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+    
         return $this->finishReconciliation(
             $context,
             'fas_date_site_amount',
             $matches,
             []
         );
-    }    
+    }
         
     public function reconcileFasSumDateSiteAmountReverse(
         string $cabang,
         int $periodId,
         string $account
     ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. LOAD CONTEXT
+        |--------------------------------------------------------------------------
+        */
+    
         $context = $this->loadContext(
             $cabang,
             $periodId,
-            $account,
+            $account
         );
-
+    
         /*
         |--------------------------------------------------------------------------
-        | Receipt FAS
+        | 2. FILTER RECEIPT
         |--------------------------------------------------------------------------
-        | Receipt diproses jika:
-        | 1. category = FAS; atau
-        | 2. comments diawali PELUNASAN KURSET.
-        |
-        | Prioritas penentuan site:
-        | - category = FAS: gunakan receipt.site.
-        | - Selain itu: ambil 4 karakter terakhir comments.
+        | Receipt boleh positif maupun negatif.
+        | Nilai nol tidak dipakai sebagai kandidat kombinasi.
         |--------------------------------------------------------------------------
         */
-
+    
         $receipts = $context['receipts']
             ->filter(function ($row) {
-                $category = strtoupper(
-                    trim((string) ($row->category ?? ''))
-                );
-
-                $comments = strtoupper(
-                    trim((string) ($row->comments ?? ''))
-                );
-
-                return $category === 'FAS'
-                    || str_starts_with(
-                        $comments,
-                        'PELUNASAN KURSET'
-                    );
+                return trim((string) ($row->comments ?? '')) !== ''
+                    && $this->toCents($row->receipt_amount) !== 0;
             })
             ->values();
-
+    
         /*
         |--------------------------------------------------------------------------
-        | Mutasi khusus dept FAS
+        | 3. FILTER MUTASI FAS
         |--------------------------------------------------------------------------
         */
-
+    
         $mutasi = $context['mutasi']
-            ->filter(fn ($row) =>
-                strtoupper(trim((string) ($row->dept ?? ''))) === 'FAS'
-            )
+            ->filter(function ($row) {
+                return strtoupper(
+                    trim((string) ($row->dept ?? ''))
+                ) === 'FAS';
+            })
+            ->filter(function ($row) {
+                return trim((string) ($row->remark ?? '')) !== ''
+                    && $this->normalizeMatchText(
+                        $row->remark
+                    ) !== ''
+                    && $this->toCents($row->cr) > 0;
+            })
             ->values();
-
+    
         /*
         |--------------------------------------------------------------------------
-        | Kelompokkan receipt berdasarkan rekening + tanggal + site.
+        | 4. KELOMPOKKAN RECEIPT BERDASARKAN REKENING + TANGGAL
         |--------------------------------------------------------------------------
-        | Jika category = FAS, site berasal dari field receipt.site.
-        | Jika bukan, site berasal dari 4 karakter terakhir comments.
-        |--------------------------------------------------------------------------
-        */
-
-        $receiptGroups = $receipts->groupBy(function ($row) {
-            $category = strtoupper(
-                trim((string) ($row->category ?? ''))
-            );
-
-            if ($category === 'FAS') {
-                $site = trim((string) ($row->site ?? ''));
-            } else {
-                $site = substr(
-                    trim((string) ($row->comments ?? '')),
-                    -4
-                );
-            }
-
-            return $this->buildSiteDateKey(
-                $row->remittance_bank_account,
-                $row->receipt_date,
-                $site
-            );
-        });
-
-        /*
-        |--------------------------------------------------------------------------
-        | Kelompokkan mutasi berdasarkan rekening + tanggal + site.
+        | Site tidak dimasukkan ke key karena ada dua aturan pencocokan:
+        |
+        | A. PELUNASAN KURSET:
+        |    Site receipt harus sama dengan site mutasi.
+        |
+        | B. Comments sama dengan remark:
+        |    Site tidak perlu sama.
         |--------------------------------------------------------------------------
         */
-
-        $mutasiGroups = $mutasi->groupBy(
+    
+        $receiptGroups = $receipts->groupBy(
             fn ($row) => $this->buildSiteDateKey(
-                $row->no_rek,
-                $row->tgl,
-                $row->site
+                trim((string) $row->remittance_bank_account),
+                $row->receipt_date
             )
         );
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 5. KELOMPOKKAN MUTASI BERDASARKAN REKENING + TANGGAL
+        |--------------------------------------------------------------------------
+        */
+    
+        $mutasiGroups = $mutasi->groupBy(
+            fn ($row) => $this->buildSiteDateKey(
+                trim((string) $row->no_rek),
+                $row->tgl
+            )
+        );
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 6. INISIALISASI HASIL
+        |--------------------------------------------------------------------------
+        */
+    
         $matches = [];
         $usedReceiptIds = [];
         $usedMutasiIds = [];
-
+    
         /*
         |--------------------------------------------------------------------------
-        | Cari kombinasi beberapa receipt untuk satu mutasi.
+        | 7. PROSES PENCARIAN MATCH
         |--------------------------------------------------------------------------
         */
-
+    
         foreach ($mutasiGroups as $key => $mutasiGroup) {
+    
             $receiptGroup = $receiptGroups->get($key, collect());
-
+    
             if ($receiptGroup->isEmpty()) {
                 continue;
             }
-
+    
             foreach ($mutasiGroup as $mutasiRow) {
+    
+                /*
+                |--------------------------------------------------------------------------
+                | CEK MUTASI SUDAH DIGUNAKAN
+                |--------------------------------------------------------------------------
+                */
+    
                 if (in_array(
                     (string) $mutasiRow->id,
                     $usedMutasiIds,
@@ -890,117 +1521,286 @@ class RegularReconciliationService
                 )) {
                     continue;
                 }
-
+    
+                $normalizedRemark = $this->normalizeMatchText(
+                    $mutasiRow->remark
+                );
+    
+                $mutasiSite = strtoupper(
+                    trim((string) ($mutasiRow->site ?? ''))
+                );
+    
+                if ($normalizedRemark === '') {
+                    continue;
+                }
+    
+                /*
+                |--------------------------------------------------------------------------
+                | 7A. PILIH KANDIDAT RECEIPT
+                |--------------------------------------------------------------------------
+                |
+                | Aturan A:
+                | Comments diawali PELUNASAN KURSET / PELUNSAN KURSET.
+                | Site receipt harus sama dengan site mutasi.
+                |
+                | Penentuan site receipt:
+                | 1. Gunakan field receipt.site jika tersedia.
+                | 2. Jika kosong, gunakan 4 karakter paling kanan comments.
+                |
+                | Aturan B:
+                | Comments sama dengan remark setelah normalisasi.
+                | Site tidak diperiksa untuk aturan ini.
+                |--------------------------------------------------------------------------
+                */
+    
                 $availableReceipts = $receiptGroup
-                    ->reject(fn ($row) =>
-                        in_array(
+                    ->reject(function ($row) use ($usedReceiptIds) {
+                        return in_array(
                             (string) $row->id,
                             $usedReceiptIds,
                             true
-                        )
-                    )
-                    ->filter(fn ($row) =>
-                        $this->toCents($row->receipt_amount) > 0
-                    )
+                        );
+                    })
+                    ->filter(function ($row) use (
+                        $normalizedRemark,
+                        $mutasiSite
+                    ) {
+    
+                        $comments = trim(
+                            (string) ($row->comments ?? '')
+                        );
+    
+                        if ($comments === '') {
+                            return false;
+                        }
+    
+                        $normalizedComments =
+                            $this->normalizeMatchText($comments);
+    
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ATURAN A: PELUNASAN KURSET BERDASARKAN SITE
+                        |--------------------------------------------------------------------------
+                        */
+    
+                        $isPelunasanKurset =
+                            str_starts_with(
+                                $normalizedComments,
+                                'PELUNASANKURSET'
+                            )
+                            || str_starts_with(
+                                $normalizedComments,
+                                'PELUNSANKURSET'
+                            );
+    
+                        if ($isPelunasanKurset) {
+    
+                            /*
+                            |--------------------------------------------------------------------------
+                            | SITE RECEIPT
+                            |--------------------------------------------------------------------------
+                            | Prioritas:
+                            | 1. Gunakan receipt.site jika tersedia.
+                            | 2. Jika kosong, gunakan 4 karakter terakhir comments.
+                            |--------------------------------------------------------------------------
+                            */
+    
+                            $receiptSite = trim(
+                                (string) ($row->site ?? '')
+                            );
+    
+                            if ($receiptSite === '') {
+                                $receiptSite = substr(
+                                    $comments,
+                                    -4
+                                );
+                            }
+    
+                            $receiptSite = strtoupper(
+                                trim($receiptSite)
+                            );
+    
+                            if (
+                                $receiptSite !== ''
+                                && $mutasiSite !== ''
+                                && $receiptSite === $mutasiSite
+                            ) {
+                                return true;
+                            }
+                        }
+    
+                        /*
+                        |--------------------------------------------------------------------------
+                        | ATURAN B: COMMENTS SAMA DENGAN REMARK
+                        |--------------------------------------------------------------------------
+                        | Aturan ini tetap berlaku walaupun site berbeda.
+                        |--------------------------------------------------------------------------
+                        */
+    
+                        return $normalizedComments === $normalizedRemark;
+                    })
                     ->values();
-
+    
                 if ($availableReceipts->isEmpty()) {
                     continue;
                 }
-
+    
+                /*
+                |--------------------------------------------------------------------------
+                | 7B. CARI KOMBINASI NOMINAL
+                |--------------------------------------------------------------------------
+                | Menggunakan integer sen agar tidak terkena masalah presisi float.
+                | Nominal negatif ikut diakumulasikan dengan tanda aslinya.
+                |
+                | Dynamic programming:
+                | sum => daftar indeks receipt yang membentuk jumlah tersebut.
+                |--------------------------------------------------------------------------
+                */
+    
                 $targetCents = $this->toCents($mutasiRow->cr);
-
-                $solution = $this->findFirstReceiptSubset(
-                    $availableReceipts,
-                    $targetCents
-                );
-
-                if ($solution === null || empty($solution)) {
+    
+                $sumStates = [
+                    0 => [],
+                ];
+    
+                foreach ($availableReceipts as $index => $receipt) {
+    
+                    $amountCents = $this->toCents(
+                        $receipt->receipt_amount
+                    );
+    
+                    if ($amountCents === 0) {
+                        continue;
+                    }
+    
+                    // Salin state agar receipt yang sama tidak digunakan dua kali.
+                    $previousStates = $sumStates;
+    
+                    foreach ($previousStates as $currentSum => $indices) {
+    
+                        $newSum = (int) $currentSum + $amountCents;
+    
+                        // Simpan satu kombinasi untuk setiap jumlah.
+                        if (!array_key_exists($newSum, $sumStates)) {
+                            $sumStates[$newSum] = array_merge(
+                                $indices,
+                                [$index]
+                            );
+                        }
+                    }
+    
+                    if (isset($sumStates[$targetCents])) {
+                        break;
+                    }
+                }
+    
+                if (!isset($sumStates[$targetCents])) {
                     continue;
                 }
-
-                $matchedReceipts = collect($solution)
-                    ->map(fn ($index) =>
-                        $availableReceipts->get($index)
-                    )
+    
+                $solutionIndices = $sumStates[$targetCents];
+    
+                if (empty($solutionIndices)) {
+                    continue;
+                }
+    
+                /*
+                |--------------------------------------------------------------------------
+                | 7C. AMBIL RECEIPT YANG TERPILIH
+                |--------------------------------------------------------------------------
+                */
+    
+                $matchedReceipts = collect($solutionIndices)
+                    ->map(function ($index) use ($availableReceipts) {
+                        return $availableReceipts->get($index);
+                    })
+                    ->filter()
                     ->values();
-
-                $matchedTotalCents = $matchedReceipts->sum(
-                    fn ($row) =>
-                        $this->toCents($row->receipt_amount)
-                );
-
-                /*
-                |--------------------------------------------------------------------------
-                | Validasi toleransi nominal
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    abs($matchedTotalCents - $targetCents)
-                    >= self::AMOUNT_TOLERANCE_CENTS
-                ) {
+    
+                if ($matchedReceipts->isEmpty()) {
                     continue;
                 }
-
+    
                 /*
                 |--------------------------------------------------------------------------
-                | Satu reff untuk satu mutasi dan semua receipt yang cocok.
+                | 7D. VALIDASI ULANG JUMLAH
                 |--------------------------------------------------------------------------
                 */
-
-                $reff = 'REG-' . $mutasiRow->id;
-
+    
+                $matchedTotalCents = $matchedReceipts->sum(
+                    fn ($row) => $this->toCents(
+                        $row->receipt_amount
+                    )
+                );
+    
+                if ($matchedTotalCents !== $targetCents) {
+                    continue;
+                }
+    
+                /*
+                |--------------------------------------------------------------------------
+                | 7E. SIAPKAN HASIL MATCH
+                |--------------------------------------------------------------------------
+                */
+    
+                $firstReceipt = $matchedReceipts->first();
+    
                 $matches[] = [
                     'receipt_ids' => $matchedReceipts
                         ->pluck('id')
                         ->values()
                         ->all(),
-
+    
                     'receipt_numbers' => $matchedReceipts
                         ->pluck('receipt_number')
                         ->values()
                         ->all(),
-
+    
                     'receipt_dates' => $matchedReceipts
                         ->pluck('receipt_date')
                         ->values()
                         ->all(),
-
+    
                     'receipt_amounts' => $matchedReceipts
-                        ->map(fn ($row) =>
-                            (float) $row->receipt_amount
-                        )
+                        ->map(fn ($row) => (float) $row->receipt_amount)
                         ->values()
                         ->all(),
-
-                    'receipt_amount' => (float) $matchedReceipts->sum(
-                        fn ($row) =>
-                            (float) $row->receipt_amount
+    
+                    // Total mempertahankan tanda positif dan negatif.
+                    'receipt_amount' => $matchedReceipts->sum(
+                        fn ($row) => (float) $row->receipt_amount
                     ),
-
-                    'paid_by' => $matchedReceipts->first()->paid_by,
-
+    
+                    'comments' => $firstReceipt->comments ?? '',
+                    'paid_by' => $firstReceipt->paid_by ?? '',
+    
                     'mutasi_ids' => [$mutasiRow->id],
                     'mutasi_date' => $mutasiRow->tgl,
                     'mutasi_amount' => (float) $mutasiRow->cr,
-                    'reff' => $reff,
+    
+                    'reff' => 'REG-' . $mutasiRow->id,
                 ];
-
+    
                 /*
                 |--------------------------------------------------------------------------
-                | Tandai receipt dan mutasi yang sudah digunakan.
+                | 7F. TANDAI DATA SUDAH DIGUNAKAN
                 |--------------------------------------------------------------------------
                 */
-
+    
                 foreach ($matchedReceipts as $receipt) {
                     $usedReceiptIds[] = (string) $receipt->id;
                 }
-
+    
                 $usedMutasiIds[] = (string) $mutasiRow->id;
             }
         }
-
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 8. SIMPAN HASIL REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+    
         return $this->finishReverseReconciliation(
             $context,
             'fas_sum_date_site_amount_reverse',
@@ -1008,21 +1808,528 @@ class RegularReconciliationService
         );
     }
 
-    /**
-     * METODE 2: sls_date_site_amount
-     *
-     * Pencocokan 1 receipt : 1 mutasi.
-     *
-     * Kriteria:
-     * - Rekening sama.
-     * - Tanggal sama.
-     * - Nominal sama.
-     * - mutasi_detail.dept = SLS.
-     * - receipt.paid_by = mutasi_detail.site.
-     *
-     * Jika ada beberapa kandidat, gunakan kandidat pertama
-     * yang masih tersedia.
-     */
+    public function reconcileFasSumDateSiteAmountMany(
+        string $cabang,
+        int $periodId,
+        string $account
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. LOAD CONTEXT
+        |--------------------------------------------------------------------------
+        */
+    
+        $context = $this->loadContext(
+            $cabang,
+            $periodId,
+            $account
+        );
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 2. FILTER RECEIPT FAS
+        |--------------------------------------------------------------------------
+        | Kandidat receipt:
+        | A. Comments diawali PELUNASAN KURSET / PELUNSAN KURSET.
+        | B. Category = FAS.
+        |--------------------------------------------------------------------------
+        */
+    
+        $receipts = $context['receipts']
+            ->filter(function ($row) {
+    
+                $comments = strtoupper(
+                    trim((string) ($row->comments ?? ''))
+                );
+    
+                $category = strtoupper(
+                    trim((string) ($row->category ?? ''))
+                );
+    
+                $isPelunasanKurset =
+                    str_starts_with(
+                        $comments,
+                        'PELUNASAN KURSET'
+                    )
+                    || str_starts_with(
+                        $comments,
+                        'PELUNSAN KURSET'
+                    );
+    
+                $isCategoryFas = $category === 'FAS';
+    
+                return (
+                    $isPelunasanKurset
+                    || $isCategoryFas
+                ) && $this->toCents($row->receipt_amount) > 0;
+            })
+            ->values();
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 3. FILTER MUTASI FAS
+        |--------------------------------------------------------------------------
+        | Tidak menggunakan remark.
+        | Hanya menggunakan mutasi dengan dept = FAS dan cr positif.
+        |--------------------------------------------------------------------------
+        */
+    
+        $mutasi = $context['mutasi']
+            ->filter(fn ($row) =>
+                strtoupper(
+                    trim((string) ($row->dept ?? ''))
+                ) === 'FAS'
+            )
+            ->filter(fn ($row) =>
+                $this->toCents($row->cr) > 0
+            )
+            ->values();
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 4. KELOMPOKKAN RECEIPT BERDASARKAN REKENING + TANGGAL + SITE
+        |--------------------------------------------------------------------------
+        |
+        | Aturan site receipt:
+        |
+        | A. Comments PELUNASAN KURSET:
+        |    - Jika field site terisi, gunakan field site.
+        |    - Jika kosong, gunakan RIGHT(comments, 4).
+        |
+        | B. Category = FAS:
+        |    - Gunakan field site.
+        |--------------------------------------------------------------------------
+        */
+    
+        $receiptGroups = $receipts->groupBy(
+            function ($row) {
+    
+                $comments = strtoupper(
+                    trim((string) ($row->comments ?? ''))
+                );
+    
+                $category = strtoupper(
+                    trim((string) ($row->category ?? ''))
+                );
+    
+                $isPelunasanKurset =
+                    str_starts_with(
+                        $comments,
+                        'PELUNASAN KURSET'
+                    )
+                    || str_starts_with(
+                        $comments,
+                        'PELUNSAN KURSET'
+                    );
+    
+                $site = '';
+    
+                if ($isPelunasanKurset) {
+    
+                    $site = trim(
+                        (string) ($row->site ?? '')
+                    );
+    
+                    if ($site === '') {
+                        $site = substr(
+                            trim((string) ($row->comments ?? '')),
+                            -4
+                        );
+                    }
+    
+                } elseif ($category === 'FAS') {
+    
+                    $site = trim(
+                        (string) ($row->site ?? '')
+                    );
+                }
+    
+                $site = strtoupper(trim($site));
+    
+                return $this->buildSiteDateKey(
+                    trim((string) $row->remittance_bank_account),
+                    $row->receipt_date,
+                    $site
+                );
+            }
+        );
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 5. KELOMPOKKAN MUTASI BERDASARKAN REKENING + TANGGAL + SITE
+        |--------------------------------------------------------------------------
+        */
+    
+        $mutasiGroups = $mutasi->groupBy(
+            fn ($row) => $this->buildSiteDateKey(
+                trim((string) $row->no_rek),
+                $row->tgl,
+                strtoupper(trim((string) ($row->site ?? '')))
+            )
+        );
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 6. INISIALISASI
+        |--------------------------------------------------------------------------
+        */
+    
+        $matches = [];
+    
+        $usedReceiptIds = [];
+        $usedMutasiIds = [];
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 7. HELPER UNTUK MEMBENTUK DATA MATCH
+        |--------------------------------------------------------------------------
+        */
+    
+        $makeManyMatch = function (
+            $matchedReceipts,
+            $matchedMutasi
+        ) use (&$matches) {
+    
+            $matchedReceipts = collect($matchedReceipts)->values();
+            $matchedMutasi = collect($matchedMutasi)->values();
+    
+            if (
+                $matchedReceipts->isEmpty()
+                || $matchedMutasi->isEmpty()
+            ) {
+                return;
+            }
+    
+            $receiptAmountCents = $matchedReceipts->sum(
+                fn ($row) => $this->toCents($row->receipt_amount)
+            );
+    
+            $mutasiAmountCents = $matchedMutasi->sum(
+                fn ($row) => $this->toCents($row->cr)
+            );
+    
+            /*
+            * Validasi nominal dengan toleransi kurang dari Rp1.
+            */
+            if (
+                abs($receiptAmountCents - $mutasiAmountCents)
+                >= self::AMOUNT_TOLERANCE_CENTS
+            ) {
+                return;
+            }
+    
+            $receiptIds = $matchedReceipts
+                ->pluck('id')
+                ->values()
+                ->all();
+    
+            $mutasiIds = $matchedMutasi
+                ->pluck('id')
+                ->values()
+                ->all();
+    
+            /*
+            * Satu reff untuk seluruh receipt dan mutasi.
+            */
+            $reff = 'REG-' . min($mutasiIds);
+    
+            $matches[] = [
+                'receipt_ids' => $receiptIds,
+    
+                'receipt_numbers' => $matchedReceipts
+                    ->pluck('receipt_number')
+                    ->values()
+                    ->all(),
+    
+                'receipt_dates' => $matchedReceipts
+                    ->pluck('receipt_date')
+                    ->values()
+                    ->all(),
+    
+                'receipt_amounts' => $matchedReceipts
+                    ->map(fn ($row) =>
+                        (float) $row->receipt_amount
+                    )
+                    ->values()
+                    ->all(),
+    
+                'receipt_amount' => (float) $matchedReceipts->sum(
+                    fn ($row) => (float) $row->receipt_amount
+                ),
+    
+                'comments' => $matchedReceipts->first()->comments ?? '',
+    
+                'paid_by' => $matchedReceipts->first()->paid_by ?? '',
+    
+                'mutasi_ids' => $mutasiIds,
+    
+                'mutasi_dates' => $matchedMutasi
+                    ->pluck('tgl')
+                    ->values()
+                    ->all(),
+    
+                'mutasi_amounts' => $matchedMutasi
+                    ->map(fn ($row) => (float) $row->cr)
+                    ->values()
+                    ->all(),
+    
+                'mutasi_amount' => (float) $matchedMutasi->sum(
+                    fn ($row) => (float) $row->cr
+                ),
+    
+                'reff' => $reff,
+            ];
+    
+            /*
+            * Tandai semua ID agar tidak digunakan kembali.
+            */
+            foreach ($matchedReceipts as $receipt) {
+                $usedReceiptIds[] = (string) $receipt->id;
+            }
+    
+            foreach ($matchedMutasi as $mutasiRow) {
+                $usedMutasiIds[] = (string) $mutasiRow->id;
+            }
+        };
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 8. PROSES SETIAP KELOMPOK REKENING + TANGGAL + SITE
+        |--------------------------------------------------------------------------
+        */
+    
+        foreach ($receiptGroups as $key => $receiptGroup) {
+    
+            $mutasiGroup = $mutasiGroups->get(
+                $key,
+                collect()
+            );
+    
+            if ($mutasiGroup->isEmpty()) {
+                continue;
+            }
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 8A. AMBIL DATA YANG BELUM DIGUNAKAN
+            |--------------------------------------------------------------------------
+            */
+    
+            $getAvailableReceipts = function () use (
+                $receiptGroup,
+                &$usedReceiptIds
+            ) {
+                return $receiptGroup
+                    ->reject(fn ($row) =>
+                        in_array(
+                            (string) $row->id,
+                            $usedReceiptIds,
+                            true
+                        )
+                    )
+                    ->values();
+            };
+    
+            $getAvailableMutasi = function () use (
+                $mutasiGroup,
+                &$usedMutasiIds
+            ) {
+                return $mutasiGroup
+                    ->reject(fn ($row) =>
+                        in_array(
+                            (string) $row->id,
+                            $usedMutasiIds,
+                            true
+                        )
+                    )
+                    ->values();
+            };
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 8B. POLA 1 MUTASI : 1 RECEIPT
+            |--------------------------------------------------------------------------
+            */
+    
+            foreach ($getAvailableReceipts() as $receipt) {
+    
+                $availableMutasi = $getAvailableMutasi();
+    
+                $mutasiRow = $availableMutasi->first(
+                    fn ($row) =>
+                        $this->isAmountWithinTolerance(
+                            $receipt->receipt_amount,
+                            $row->cr
+                        )
+                );
+    
+                if (!$mutasiRow) {
+                    continue;
+                }
+    
+                $makeManyMatch(
+                    collect([$receipt]),
+                    collect([$mutasiRow])
+                );
+            }
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 8C. POLA N RECEIPT : 1 MUTASI
+            |--------------------------------------------------------------------------
+            */
+    
+            foreach ($getAvailableMutasi() as $mutasiRow) {
+    
+                $availableReceipts = $getAvailableReceipts();
+    
+                if ($availableReceipts->isEmpty()) {
+                    continue;
+                }
+    
+                $targetCents = $this->toCents(
+                    $mutasiRow->cr
+                );
+    
+                $solution = $this->findFirstReceiptSubset(
+                    $availableReceipts,
+                    $targetCents
+                );
+    
+                if ($solution === null || empty($solution)) {
+                    continue;
+                }
+    
+                $matchedReceipts = collect($solution)
+                    ->map(fn ($index) =>
+                        $availableReceipts->get($index)
+                    )
+                    ->filter()
+                    ->values();
+    
+                if ($matchedReceipts->isEmpty()) {
+                    continue;
+                }
+    
+                $makeManyMatch(
+                    $matchedReceipts,
+                    collect([$mutasiRow])
+                );
+            }
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 8D. POLA 1 RECEIPT : N MUTASI
+            |--------------------------------------------------------------------------
+            */
+    
+            foreach ($getAvailableReceipts() as $receipt) {
+    
+                $availableMutasi = $getAvailableMutasi();
+    
+                if ($availableMutasi->isEmpty()) {
+                    continue;
+                }
+    
+                $targetCents = $this->toCents(
+                    $receipt->receipt_amount
+                );
+    
+                $solution = $this->findFirstSubset(
+                    $availableMutasi,
+                    $targetCents
+                );
+    
+                if ($solution === null || empty($solution)) {
+                    continue;
+                }
+    
+                $matchedMutasi = collect($solution)
+                    ->map(fn ($index) =>
+                        $availableMutasi->get($index)
+                    )
+                    ->filter()
+                    ->values();
+    
+                if ($matchedMutasi->isEmpty()) {
+                    continue;
+                }
+    
+                $makeManyMatch(
+                    collect([$receipt]),
+                    $matchedMutasi
+                );
+            }
+    
+            /*
+            |--------------------------------------------------------------------------
+            | 8E. POLA N RECEIPT : N MUTASI
+            |--------------------------------------------------------------------------
+            | Jumlahkan receipt yang tersisa, kemudian cari kombinasi
+            | mutasi yang jumlahnya sama.
+            |--------------------------------------------------------------------------
+            */
+    
+            $availableReceipts = $getAvailableReceipts();
+            $availableMutasi = $getAvailableMutasi();
+    
+            if (
+                $availableReceipts->isEmpty()
+                || $availableMutasi->isEmpty()
+            ) {
+                continue;
+            }
+    
+            $targetCents = $availableReceipts->sum(
+                fn ($row) => $this->toCents(
+                    $row->receipt_amount
+                )
+            );
+    
+            if ($targetCents <= 0) {
+                continue;
+            }
+    
+            $solution = $this->findFirstSubset(
+                $availableMutasi,
+                $targetCents
+            );
+    
+            if ($solution === null || empty($solution)) {
+                continue;
+            }
+    
+            $matchedMutasi = collect($solution)
+                ->map(fn ($index) =>
+                    $availableMutasi->get($index)
+                )
+                ->filter()
+                ->values();
+    
+            if ($matchedMutasi->isEmpty()) {
+                continue;
+            }
+    
+            $makeManyMatch(
+                $availableReceipts,
+                $matchedMutasi
+            );
+        }
+    
+        /*
+        |--------------------------------------------------------------------------
+        | 9. SIMPAN HASIL REKONSILIASI FAS
+        |--------------------------------------------------------------------------
+        */
+    
+        return $this->finishManyToManyReconciliation(
+            $context,
+            'fas_sum_date_site_amount_many',
+            $matches,
+            'FAS'
+        );
+    }
+
     public function reconcileSlsDateSiteAmount(
         string $cabang,
         int $periodId,
@@ -1971,6 +3278,861 @@ class RegularReconciliationService
             $matches
         );
     }
+            
+    public function reconcileDeptSiteDateAmountManyToMany(
+        string $cabang,
+        int $periodId,
+        string $account
+    ): array {
+        /*
+        |--------------------------------------------------------------------------
+        | 1. LOAD CONTEXT
+        |--------------------------------------------------------------------------
+        */
+
+        $context = $this->loadContext(
+            $cabang,
+            $periodId,
+            $account
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. ACTIVITY KHUSUS SLS
+        |--------------------------------------------------------------------------
+        */
+
+        $slsActivities = [
+            'hasil penjualan belum diterima',
+            'setoran sales per shift',
+        ];
+
+        $normalizeText = static function ($value): string {
+            return strtoupper(trim((string) ($value ?? '')));
+        };
+
+        $normalizeActivity = static function ($value): string {
+            return strtolower(trim((string) ($value ?? '')));
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. FILTER RECEIPT
+        |--------------------------------------------------------------------------
+        |
+        | SLS:
+        |   category = SLS
+        |   site     = paid_by
+        |
+        | Non SLS:
+        |   category = receipt.category
+        |   site     = receipt.site
+        |
+        | Nominal positif dan negatif diperbolehkan.
+        |
+        */
+
+        $receipts = $context['receipts']
+            ->filter(function ($row) use (
+                $slsActivities,
+                $normalizeActivity
+            ) {
+                $accountNumber = trim(
+                    (string) ($row->remittance_bank_account ?? '')
+                );
+
+                $date = trim(
+                    (string) ($row->receipt_date ?? '')
+                );
+
+                $amount = $this->toCents(
+                    $row->receipt_amount ?? 0
+                );
+
+                $activity = $normalizeActivity(
+                    $row->activity ?? ''
+                );
+
+                $isSls = in_array(
+                    $activity,
+                    $slsActivities,
+                    true
+                );
+
+                if (
+                    $accountNumber === ''
+                    || $date === ''
+                    || $amount === 0
+                ) {
+                    return false;
+                }
+
+                if ($isSls) {
+                    return trim(
+                        (string) ($row->paid_by ?? '')
+                    ) !== '';
+                }
+
+                return trim(
+                    (string) ($row->category ?? '')
+                ) !== '' && trim(
+                    (string) ($row->site ?? '')
+                ) !== '';
+            })
+            ->map(function ($row) use (
+                $slsActivities,
+                $normalizeActivity
+            ) {
+                $activity = $normalizeActivity(
+                    $row->activity ?? ''
+                );
+
+                $isSls = in_array(
+                    $activity,
+                    $slsActivities,
+                    true
+                );
+
+                $row->_match_category = $isSls
+                    ? 'SLS'
+                    : trim((string) ($row->category ?? ''));
+
+                $row->_match_site = $isSls
+                    ? trim((string) ($row->paid_by ?? ''))
+                    : trim((string) ($row->site ?? ''));
+
+                return $row;
+            })
+            ->values();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4. FILTER MUTASI
+        |--------------------------------------------------------------------------
+        */
+
+        $mutasi = $context['mutasi']
+            ->filter(fn ($row) =>
+                trim((string) ($row->no_rek ?? '')) !== ''
+                && trim((string) ($row->tgl ?? '')) !== ''
+                && trim((string) ($row->dept ?? '')) !== ''
+                && trim((string) ($row->site ?? '')) !== ''
+                && $this->toCents($row->cr ?? 0) > 0
+            )
+            ->values();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 5. GROUP KEY
+        |--------------------------------------------------------------------------
+        */
+
+        $makeGroupKey = function (
+            $accountNumber,
+            $date,
+            $deptOrCategory,
+            $site
+        ): string {
+            return json_encode([
+                'account' => preg_replace(
+                    '/\s+/u',
+                    '',
+                    trim((string) $accountNumber)
+                ),
+
+                'date' => \Carbon\Carbon::parse($date)
+                    ->format('Y-m-d'),
+
+                'dept' => strtoupper(
+                    trim((string) $deptOrCategory)
+                ),
+
+                'site' => strtoupper(
+                    trim((string) $site)
+                ),
+            ], JSON_UNESCAPED_UNICODE);
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. GROUP RECEIPT
+        |--------------------------------------------------------------------------
+        */
+
+        $receiptGroups = $receipts->groupBy(
+            fn ($row) => $makeGroupKey(
+                $row->remittance_bank_account,
+                $row->receipt_date,
+                $row->_match_category,
+                $row->_match_site
+            )
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. GROUP MUTASI
+        |--------------------------------------------------------------------------
+        */
+
+        $mutasiGroups = $mutasi->groupBy(
+            fn ($row) => $makeGroupKey(
+                $row->no_rek,
+                $row->tgl,
+                $row->dept,
+                $row->site
+            )
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | 8. KONFIGURASI PENCARIAN
+        |--------------------------------------------------------------------------
+        |
+        | Maksimum state disimpan.
+        |
+        | Nilai ini merupakan pengaman penggunaan memori.
+        | Jika tercapai, state dipilih berdasarkan kedekatan
+        | dengan target nominal.
+        |
+        */
+
+        $maxStates = 250000;
+
+        /*
+        |--------------------------------------------------------------------------
+        | 9. HELPER MEMBANGUN SUBSET SUM
+        |--------------------------------------------------------------------------
+        |
+        | Hasil:
+        |
+        | [
+        |   'states' => [
+        |       nominal => [index, index, ...]
+        |   ],
+        |   'truncated' => bool,
+        |   'state_count' => int
+        | ]
+        |
+        | Setiap record hanya boleh digunakan satu kali.
+        |
+        */
+
+        $buildSubsetMap = function (
+            array $rows,
+            int $maxTarget,
+            int $maxStates,
+            bool $positiveOnly = false
+        ): array {
+
+            $states = [
+                0 => [],
+            ];
+
+            $truncated = false;
+
+            /*
+            * Urutkan nominal terbesar lebih dahulu.
+            * Index asli tetap dipertahankan.
+            */
+            $orderedRows = [];
+
+            foreach ($rows as $index => $row) {
+                $amount = (int) $row['amount'];
+
+                if ($amount === 0) {
+                    continue;
+                }
+
+                if ($positiveOnly && $amount < 0) {
+                    continue;
+                }
+
+                $orderedRows[] = [
+                    'index' => $index,
+                    'amount' => $amount,
+                ];
+            }
+
+            usort(
+                $orderedRows,
+                fn ($a, $b) =>
+                    abs($b['amount']) <=> abs($a['amount'])
+            );
+
+            foreach ($orderedRows as $item) {
+
+                $amount = (int) $item['amount'];
+                $originalIndex = $item['index'];
+
+                /*
+                * Snapshot agar satu baris tidak dipakai
+                * berulang kali dalam iterasi yang sama.
+                */
+                $snapshot = $states;
+
+                foreach ($snapshot as $sum => $indexes) {
+
+                    $newSum = (int) $sum + $amount;
+
+                    /*
+                    * Mutasi hanya positif.
+                    * Jangan menyimpan kombinasi yang
+                    * sudah melewati batas nominal receipt.
+                    */
+                    if (
+                        $positiveOnly
+                        && $newSum > $maxTarget
+                    ) {
+                        continue;
+                    }
+
+                    /*
+                    * Satu nominal cukup menyimpan kombinasi
+                    * dengan jumlah baris paling sedikit.
+                    */
+                    if (
+                        !isset($states[$newSum])
+                        || count($indexes) + 1
+                            < count($states[$newSum])
+                    ) {
+                        $states[$newSum] = array_merge(
+                            $indexes,
+                            [$originalIndex]
+                        );
+                    }
+                }
+
+                /*
+                * Pangkas state jika melewati batas.
+                * Prioritaskan nominal yang paling dekat
+                * dengan target maksimum.
+                */
+                if (count($states) > $maxStates) {
+
+                    $truncated = true;
+
+                    unset($states[0]);
+
+                    $stateKeys = array_keys($states);
+
+                    usort(
+                        $stateKeys,
+                        function ($a, $b) use ($maxTarget, $states) {
+
+                            $distanceA = abs(
+                                $maxTarget - (int) $a
+                            );
+
+                            $distanceB = abs(
+                                $maxTarget - (int) $b
+                            );
+
+                            if ($distanceA !== $distanceB) {
+                                return $distanceA <=> $distanceB;
+                            }
+
+                            return count($states[$a])
+                                <=> count($states[$b]);
+                        }
+                    );
+
+                    $selected = [];
+
+                    foreach (
+                        array_slice($stateKeys, 0, $maxStates - 1)
+                        as $key
+                    ) {
+                        $selected[$key] = $states[$key];
+                    }
+
+                    $selected[0] = [];
+
+                    $states = $selected;
+                }
+            }
+
+            unset($states[0]);
+
+            return [
+                'states' => $states,
+                'truncated' => $truncated,
+                'state_count' => count($states),
+            ];
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 10. HELPER MENCARI KOMBINASI TERBAIK
+        |--------------------------------------------------------------------------
+        */
+
+        $findBestMatch = function (
+            array $receiptRows,
+            array $mutasiRows
+        ) use (
+            $buildSubsetMap,
+            $maxStates
+        ): array {
+
+            if (
+                empty($receiptRows)
+                || empty($mutasiRows)
+            ) {
+                return [
+                    'match' => null,
+                    'receipt_truncated' => false,
+                    'mutasi_truncated' => false,
+                    'receipt_states' => 0,
+                    'mutasi_states' => 0,
+                ];
+            }
+
+            /*
+            * Batas jumlah receipt positif dan negatif.
+            */
+            $minReceiptSum = 0;
+            $maxReceiptSum = 0;
+
+            foreach ($receiptRows as $row) {
+
+                $amount = (int) $row['amount'];
+
+                if ($amount < 0) {
+                    $minReceiptSum += $amount;
+                } else {
+                    $maxReceiptSum += $amount;
+                }
+            }
+
+            if ($maxReceiptSum <= 0) {
+                return [
+                    'match' => null,
+                    'receipt_truncated' => false,
+                    'mutasi_truncated' => false,
+                    'receipt_states' => 0,
+                    'mutasi_states' => 0,
+                ];
+            }
+
+            /*
+            * Receipt boleh positif dan negatif.
+            */
+            $receiptResult = $buildSubsetMap(
+                $receiptRows,
+                $maxReceiptSum,
+                $maxStates,
+                false
+            );
+
+            /*
+            * Mutasi hanya positif.
+            * Batasi total mutasi sampai maksimum
+            * nominal receipt + toleransi.
+            */
+            $mutasiResult = $buildSubsetMap(
+                $mutasiRows,
+                $maxReceiptSum
+                    + self::AMOUNT_TOLERANCE_CENTS,
+                $maxStates,
+                true
+            );
+
+            $receiptSubsetMap = $receiptResult['states'];
+            $mutasiSubsetMap = $mutasiResult['states'];
+
+            if (
+                empty($receiptSubsetMap)
+                || empty($mutasiSubsetMap)
+            ) {
+                return [
+                    'match' => null,
+                    'receipt_truncated' => $receiptResult['truncated'],
+                    'mutasi_truncated' => $mutasiResult['truncated'],
+                    'receipt_states' => $receiptResult['state_count'],
+                    'mutasi_states' => $mutasiResult['state_count'],
+                ];
+            }
+
+            /*
+            * Urutkan nominal mutasi.
+            * Pencarian menggunakan binary search.
+            */
+            $mutasiSums = array_keys($mutasiSubsetMap);
+
+            sort($mutasiSums, SORT_NUMERIC);
+
+            $tolerance = max(
+                0,
+                (int) self::AMOUNT_TOLERANCE_CENTS - 1
+            );
+
+            $bestMatch = null;
+            $bestRowsCount = PHP_INT_MAX;
+            $bestDifference = PHP_INT_MAX;
+            $bestAmount = 0;
+
+            foreach (
+                $receiptSubsetMap as $receiptSum => $receiptIndexes
+            ) {
+
+                $receiptSum = (int) $receiptSum;
+
+                /*
+                * Total receipt yang dicocokkan harus positif.
+                */
+                if (
+                    $receiptSum <= 0
+                    || $receiptSum < $minReceiptSum
+                    || $receiptSum > $maxReceiptSum
+                ) {
+                    continue;
+                }
+
+                $minTarget = max(
+                    1,
+                    $receiptSum - $tolerance
+                );
+
+                $maxTarget = $receiptSum + $tolerance;
+
+                /*
+                * Binary search untuk menemukan posisi
+                * nominal mutasi pertama >= minTarget.
+                */
+                $left = 0;
+                $right = count($mutasiSums);
+
+                while ($left < $right) {
+
+                    $mid = intdiv(
+                        $left + $right,
+                        2
+                    );
+
+                    if ($mutasiSums[$mid] < $minTarget) {
+                        $left = $mid + 1;
+                    } else {
+                        $right = $mid;
+                    }
+                }
+
+                /*
+                * Periksa hanya nominal dalam rentang toleransi.
+                */
+                for (
+                    $i = $left;
+                    $i < count($mutasiSums);
+                    $i++
+                ) {
+
+                    $mutasiSum = (int) $mutasiSums[$i];
+
+                    if ($mutasiSum > $maxTarget) {
+                        break;
+                    }
+
+                    $mutasiIndexes = $mutasiSubsetMap[$mutasiSum];
+
+                    $difference = abs(
+                        $receiptSum - $mutasiSum
+                    );
+
+                    $totalRows = count($receiptIndexes)
+                        + count($mutasiIndexes);
+
+                    $matchedAmount = min(
+                        $receiptSum,
+                        $mutasiSum
+                    );
+
+                    /*
+                    * Prioritas:
+                    * 1. Jumlah baris paling sedikit.
+                    * 2. Selisih paling kecil.
+                    * 3. Nominal terbesar.
+                    */
+                    $isBetter =
+                        $totalRows < $bestRowsCount
+                        || (
+                            $totalRows === $bestRowsCount
+                            && $difference < $bestDifference
+                        )
+                        || (
+                            $totalRows === $bestRowsCount
+                            && $difference === $bestDifference
+                            && $matchedAmount > $bestAmount
+                        );
+
+                    if ($isBetter) {
+
+                        $bestRowsCount = $totalRows;
+                        $bestDifference = $difference;
+                        $bestAmount = $matchedAmount;
+
+                        $bestMatch = [
+                            'receipt_indexes' => $receiptIndexes,
+                            'mutasi_indexes' => $mutasiIndexes,
+                            'receipt_total' => $receiptSum,
+                            'mutasi_total' => $mutasiSum,
+                            'difference' => $difference,
+                        ];
+                    }
+                }
+            }
+
+            return [
+                'match' => $bestMatch,
+                'receipt_truncated' => $receiptResult['truncated'],
+                'mutasi_truncated' => $mutasiResult['truncated'],
+                'receipt_states' => $receiptResult['state_count'],
+                'mutasi_states' => $mutasiResult['state_count'],
+            ];
+        };
+
+        /*
+        |--------------------------------------------------------------------------
+        | 11. PROSES SETIAP GROUP MUTASI
+        |--------------------------------------------------------------------------
+        */
+
+        $matches = [];
+
+        $searchDiagnostics = [];
+
+        foreach ($mutasiGroups as $key => $mutasiGroup) {
+
+            $receiptGroup = $receiptGroups->get(
+                $key,
+                collect()
+            );
+
+            if ($receiptGroup->isEmpty()) {
+                continue;
+            }
+
+            /*
+            * Siapkan receipt.
+            */
+            $remainingReceipts = $receiptGroup
+                ->map(fn ($row) => [
+                    'row' => $row,
+                    'amount' => $this->toCents(
+                        $row->receipt_amount
+                    ),
+                ])
+                ->values()
+                ->all();
+
+            /*
+            * Siapkan mutasi.
+            */
+            $remainingMutasi = $mutasiGroup
+                ->map(fn ($row) => [
+                    'row' => $row,
+                    'amount' => $this->toCents(
+                        $row->cr
+                    ),
+                ])
+                ->values()
+                ->all();
+
+            $iteration = 0;
+
+            while (
+                !empty($remainingReceipts)
+                && !empty($remainingMutasi)
+            ) {
+
+                $iteration++;
+
+                $searchResult = $findBestMatch(
+                    $remainingReceipts,
+                    $remainingMutasi
+                );
+
+                $searchDiagnostics[] = [
+                    'group_key' => $key,
+                    'iteration' => $iteration,
+                    'receipt_count' => count($remainingReceipts),
+                    'mutasi_count' => count($remainingMutasi),
+                    'receipt_states' => $searchResult['receipt_states'],
+                    'mutasi_states' => $searchResult['mutasi_states'],
+                    'receipt_truncated' => $searchResult['receipt_truncated'],
+                    'mutasi_truncated' => $searchResult['mutasi_truncated'],
+                    'found' => $searchResult['match'] !== null,
+                ];
+
+                $bestMatch = $searchResult['match'];
+
+                /*
+                * Tidak ditemukan kombinasi.
+                */
+                if (!$bestMatch) {
+                    break;
+                }
+
+                /*
+                * Ambil receipt yang match.
+                */
+                $matchedReceipts = [];
+
+                foreach (
+                    $bestMatch['receipt_indexes'] as $index
+                ) {
+                    $matchedReceipts[] = $remainingReceipts[$index]['row'];
+                }
+
+                /*
+                * Ambil mutasi yang match.
+                */
+                $matchedMutasi = [];
+
+                foreach (
+                    $bestMatch['mutasi_indexes'] as $index
+                ) {
+                    $matchedMutasi[] = $remainingMutasi[$index]['row'];
+                }
+
+                $receiptIds = collect($matchedReceipts)
+                    ->pluck('id')
+                    ->values()
+                    ->all();
+
+                $mutasiIds = collect($matchedMutasi)
+                    ->pluck('id')
+                    ->values()
+                    ->all();
+
+                if (
+                    empty($receiptIds)
+                    || empty($mutasiIds)
+                ) {
+                    break;
+                }
+
+                /*
+                * Satu reff untuk seluruh record kombinasi.
+                */
+                $reff = 'REG-' . $mutasiIds[0];
+
+                $receiptTotalCents = $bestMatch['receipt_total'];
+                $mutasiTotalCents = $bestMatch['mutasi_total'];
+
+                /*
+                * Simpan hasil match.
+                */
+                $matches[] = [
+
+                    'receipt_ids' => $receiptIds,
+
+                    'receipt_numbers' => collect($matchedReceipts)
+                        ->pluck('receipt_number')
+                        ->values()
+                        ->all(),
+
+                    'receipt_dates' => collect($matchedReceipts)
+                        ->pluck('receipt_date')
+                        ->values()
+                        ->all(),
+
+                    'receipt_amounts' => collect($matchedReceipts)
+                        ->map(fn ($row) =>
+                            (float) $row->receipt_amount
+                        )
+                        ->values()
+                        ->all(),
+
+                    'receipt_amount' => $receiptTotalCents / 100,
+
+                    'categories' => collect($matchedReceipts)
+                        ->map(fn ($row) => $row->_match_category)
+                        ->unique()
+                        ->values()
+                        ->all(),
+
+                    'sites' => collect($matchedReceipts)
+                        ->map(fn ($row) => $row->_match_site)
+                        ->unique()
+                        ->values()
+                        ->all(),
+
+                    'paid_by' => collect($matchedReceipts)
+                        ->pluck('paid_by')
+                        ->unique()
+                        ->values()
+                        ->all(),
+
+                    'mutasi_ids' => $mutasiIds,
+
+                    'mutasi_dates' => collect($matchedMutasi)
+                        ->pluck('tgl')
+                        ->values()
+                        ->all(),
+
+                    'mutasi_amounts' => collect($matchedMutasi)
+                        ->map(fn ($row) =>
+                            (float) $row->cr
+                        )
+                        ->values()
+                        ->all(),
+
+                    'mutasi_date' => $matchedMutasi[0]->tgl,
+
+                    'mutasi_amount' => $mutasiTotalCents / 100,
+
+                    'difference' => (
+                        $mutasiTotalCents - $receiptTotalCents
+                    ) / 100,
+
+                    'reff' => $reff,
+                ];
+
+                /*
+                * Hapus receipt yang sudah digunakan.
+                */
+                $usedReceiptIndexes = array_flip(
+                    $bestMatch['receipt_indexes']
+                );
+
+                $remainingReceipts = array_values(
+                    array_filter(
+                        $remainingReceipts,
+                        fn ($row, $index) =>
+                            !isset($usedReceiptIndexes[$index]),
+                        ARRAY_FILTER_USE_BOTH
+                    )
+                );
+
+                /*
+                * Hapus mutasi yang sudah digunakan.
+                */
+                $usedMutasiIndexes = array_flip(
+                    $bestMatch['mutasi_indexes']
+                );
+
+                $remainingMutasi = array_values(
+                    array_filter(
+                        $remainingMutasi,
+                        fn ($row, $index) =>
+                            !isset($usedMutasiIndexes[$index]),
+                        ARRAY_FILTER_USE_BOTH
+                    )
+                );
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 13. SIMPAN HASIL REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+
+        return $this->finishReverseReconciliation(
+            $context,
+            'dept_site_date_amount_many_to_many',
+            $matches
+        );
+    }
 
     /**
      * Mencari kombinasi pertama receipt dengan selisih total kurang dari Rp1.
@@ -2245,16 +4407,21 @@ class RegularReconciliationService
     /**
      * Menyimpan hasil rekonsiliasi N receipt : N mutasi.
      */
+        
     private function finishManyToManyReconciliation(
         array $context,
         string $method,
-        array $matches
+        array $matches,
+        string $dept = 'SLS'
     ): array {
         $savedMatches = [];
+
+        $dept = strtoupper(trim($dept));
 
         DB::transaction(function () use (
             $context,
             $matches,
+            $dept,
             &$savedMatches
         ) {
             $claimedReceiptIds = [];
@@ -2266,8 +4433,11 @@ class RegularReconciliationService
                 $reff = $match['reff'];
 
                 /*
-                * Cegah ID berulang di dalam batch.
+                |--------------------------------------------------------------------------
+                | 1. CEGAH ID BERULANG DALAM BATCH
+                |--------------------------------------------------------------------------
                 */
+
                 $duplicate = false;
 
                 foreach ($receiptIds as $id) {
@@ -2281,14 +4451,16 @@ class RegularReconciliationService
                     }
                 }
 
-                foreach ($mutasiIds as $id) {
-                    if (in_array(
-                        (string) $id,
-                        $claimedMutasiIds,
-                        true
-                    )) {
-                        $duplicate = true;
-                        break;
+                if (!$duplicate) {
+                    foreach ($mutasiIds as $id) {
+                        if (in_array(
+                            (string) $id,
+                            $claimedMutasiIds,
+                            true
+                        )) {
+                            $duplicate = true;
+                            break;
+                        }
                     }
                 }
 
@@ -2297,8 +4469,11 @@ class RegularReconciliationService
                 }
 
                 /*
-                * Update semua receipt.
+                |--------------------------------------------------------------------------
+                | 2. UPDATE SELURUH RECEIPT
+                |--------------------------------------------------------------------------
                 */
+
                 foreach ($receiptIds as $receiptId) {
                     $updated = DB::table('receipt')
                         ->where('id', $receiptId)
@@ -2321,14 +4496,24 @@ class RegularReconciliationService
                 }
 
                 /*
-                * Update semua mutasi.
+                |--------------------------------------------------------------------------
+                | 3. UPDATE SELURUH MUTASI
+                |--------------------------------------------------------------------------
+                | Dept mengikuti parameter:
+                | - SLS untuk metode SLS.
+                | - FAS untuk metode FAS.
+                |--------------------------------------------------------------------------
                 */
+
                 foreach ($mutasiIds as $mutasiId) {
                     $updated = DB::table('mutasi_detail')
                         ->where('id', $mutasiId)
                         ->where('cabang', $context['cabang'])
                         ->where('no_rek', $context['account'])
-                        ->where('dept', 'SLS')
+                        ->whereRaw(
+                            'UPPER(TRIM(COALESCE(dept, ?))) = ?',
+                            ['', $dept]
+                        )
                         ->where(function ($query) {
                             $query->whereNull('reff')
                                 ->orWhere('reff', '');
@@ -2339,21 +4524,31 @@ class RegularReconciliationService
 
                     if ($updated !== 1) {
                         throw new RuntimeException(
-                            "Mutasi ID {$mutasiId} sudah berubah "
-                            . 'atau sudah direkonsiliasi.'
+                            "Mutasi ID {$mutasiId} tidak dapat diperbarui. "
+                            . "Pastikan dept = {$dept}, rekening dan cabang "
+                            . 'sesuai, serta reff masih kosong.'
                         );
                     }
 
                     $claimedMutasiIds[] = (string) $mutasiId;
                 }
 
+                /*
+                |--------------------------------------------------------------------------
+                | 4. CATAT MATCH YANG BERHASIL DISIMPAN
+                |--------------------------------------------------------------------------
+                */
+
                 $savedMatches[] = $match;
             }
         }, 3);
 
         /*
-        * Hitung ID yang berhasil dipasangkan.
+        |--------------------------------------------------------------------------
+        | 5. HITUNG ID RECEIPT DAN MUTASI YANG BERHASIL DIPASANGKAN
+        |--------------------------------------------------------------------------
         */
+
         $matchedReceiptIds = collect($savedMatches)
             ->flatMap(fn ($match) => $match['receipt_ids'])
             ->map(fn ($id) => (string) $id)
@@ -2365,8 +4560,11 @@ class RegularReconciliationService
             ->all();
 
         /*
-        * Sisa receipt dan mutasi yang belum dipasangkan.
+        |--------------------------------------------------------------------------
+        | 6. DATA RECEIPT YANG BELUM MATCH
+        |--------------------------------------------------------------------------
         */
+
         $unmatchedReceipts = $context['receipts']
             ->reject(fn ($row) =>
                 in_array(
@@ -2376,6 +4574,12 @@ class RegularReconciliationService
                 )
             )
             ->values();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7. DATA MUTASI YANG BELUM MATCH
+        |--------------------------------------------------------------------------
+        */
 
         $unmatchedMutasi = $context['mutasi']
             ->reject(fn ($row) =>
@@ -2387,36 +4591,58 @@ class RegularReconciliationService
             )
             ->values();
 
+        /*
+        |--------------------------------------------------------------------------
+        | 8. HITUNG TOTAL NOMINAL MATCH
+        |--------------------------------------------------------------------------
+        */
+
         $receiptAmount = collect($savedMatches)
             ->sum('receipt_amount');
 
         $mutasiAmount = collect($savedMatches)
             ->sum('mutasi_amount');
 
+        /*
+        |--------------------------------------------------------------------------
+        | 9. RETURN HASIL REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+
         return [
             'success' => true,
+
             'message' => "Rekonsiliasi REG {$method} selesai.",
+
             'periode' => [
                 'tanggal_awal' => $context['tanggal_awal'],
                 'tanggal_akhir' => $context['tanggal_akhir'],
             ],
+
             'rekening' => $context['account'],
+
             'method' => $method,
+
             'data' => [
                 'matches' => $savedMatches,
                 'ambiguous' => [],
                 'unmatched_receipts' => $unmatchedReceipts,
                 'unmatched_mutasi' => $unmatchedMutasi,
             ],
+
             'summary' => [
                 'total_receipt' => $context['receipts']->count(),
                 'total_mutasi' => $context['mutasi']->count(),
+
                 'match' => count($savedMatches),
                 'ambiguous' => 0,
+
                 'receipt_only' => $unmatchedReceipts->count(),
                 'mutasi_only' => $unmatchedMutasi->count(),
+
                 'receipt_amount' => (float) $receiptAmount,
                 'mutasi_amount' => (float) $mutasiAmount,
+
                 'difference_amount' => (float) (
                     $mutasiAmount - $receiptAmount
                 ),
@@ -2904,13 +5130,19 @@ class RegularReconciliationService
     private function buildSiteDateKey(
         $account,
         $date,
-        $site
+        $site = null
     ): string {
-        return implode('|', [
+        $parts = [
             trim((string) $account),
             substr(trim((string) $date), 0, 10),
-            strtoupper(trim((string) $site)),
-        ]);
+        ];
+    
+        // Tambahkan site hanya jika parameter site diberikan dan tidak kosong.
+        if ($site !== null && trim((string) $site) !== '') {
+            $parts[] = strtoupper(trim((string) $site));
+        }
+    
+        return implode('|', $parts);
     }
 
     /**

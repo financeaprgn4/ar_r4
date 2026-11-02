@@ -176,6 +176,9 @@ Route::prefix('rekon')->group(function () {
     Route::post('/view-detail',[ReconciliationController::class,'ViewDetail']);
     Route::post('/update-mutasi',[ReconciliationController::class, 'updateMutasi']);
     Route::post('/update-receipt',[ReconciliationController::class, 'updateReceipt']);
+    Route::post('/unmatch-transaction',[ReconciliationController::class, 'unmatchTransaction']);
+    Route::post('/receipt/delete',[ReconciliationController::class, 'deleteReceipt']);
+    Route::post('/proses-filter',[ReconciliationController::class, 'prosesFilter']);
 });
 
 Route::get('/gl', [FTPController::class, 'listFile']);

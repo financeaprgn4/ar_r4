@@ -3135,14 +3135,14 @@ class StatementController extends Controller
 
                     DB::table($tableDetail)->insert($chunk);
 
-                }
+                }              
                                 
                 /*
                 |--------------------------------------------------------------------------
                 | UPDATE DEPT / SITE / RECONCILED BERDASARKAN DATABASE
                 |--------------------------------------------------------------------------
                 */
-                
+
                 $key = "{$bank}_{$site}";
 
                 $rules = DB::table('mutasi_update_rules')
@@ -3154,7 +3154,7 @@ class StatementController extends Controller
 
                     /*
                     |--------------------------------------------------------------------------
-                    | VALIDASI FIELD
+                    | 1. VALIDASI FIELD
                     |--------------------------------------------------------------------------
                     */
 
@@ -3163,25 +3163,34 @@ class StatementController extends Controller
                     }
 
                     $pattern = trim((string) ($rule->pattern ?? ''));
-                    $excludePattern = trim((string) ($rule->exclude_pattern ?? ''));
+                    $remark1Pattern = trim(
+                        (string) ($rule->remark1_pattern ?? '')
+                    );
+                    $excludePattern = trim(
+                        (string) ($rule->exclude_pattern ?? '')
+                    );
 
                     $hasIdSetor = !empty($rule->id_setor_field);
 
                     /*
                     |--------------------------------------------------------------------------
-                    | VALIDASI PATTERN
+                    | 2. VALIDASI PATTERN
                     |--------------------------------------------------------------------------
-                    | Rule biasa wajib memiliki pattern.
-                    | Rule ekstraksi boleh memiliki pattern kosong.
+                    | Rule biasa harus memiliki pattern atau remark1_pattern.
+                    | Rule ekstraksi boleh menggunakan keduanya dalam keadaan kosong.
                     */
 
-                    if ($pattern === '' && !$hasIdSetor) {
+                    if (
+                        $pattern === ''
+                        && $remark1Pattern === ''
+                        && !$hasIdSetor
+                    ) {
                         continue;
                     }
 
                     /*
                     |--------------------------------------------------------------------------
-                    | DATA UPDATE DARI RULE
+                    | 3. DATA UPDATE DARI RULE
                     |--------------------------------------------------------------------------
                     */
 
@@ -3195,7 +3204,6 @@ class StatementController extends Controller
                         $updateData['reconciled'] = $rule->reconciled_value;
                     }
 
-                    // Site tetap, misalnya site_value = TH7M.
                     if ($rule->site_value !== null) {
                         $updateData['site'] = $rule->site_value;
                     }
@@ -3206,7 +3214,7 @@ class StatementController extends Controller
 
                     /*
                     |--------------------------------------------------------------------------
-                    | QUERY DASAR TRANSAKSI
+                    | 4. QUERY DASAR TRANSAKSI
                     |--------------------------------------------------------------------------
                     */
 
@@ -3216,45 +3224,84 @@ class StatementController extends Controller
 
                     /*
                     |--------------------------------------------------------------------------
-                    | FILTER PATTERN
+                    | 5. FILTER PATTERN
                     |--------------------------------------------------------------------------
-                    | Pattern digunakan untuk menentukan remark yang harus cocok.
+                    | Pattern umum dicari pada remark ATAU remark1.
+                    |
+                    | Jika remark1_pattern diisi, syarat tambahan tersebut juga wajib
+                    | terpenuhi. Dengan demikian, pola umum tidak membuat dua transaksi
+                    | yang mirip masuk ke rule yang sama.
                     */
 
                     if ($pattern !== '') {
-                        $query->where('remark', 'LIKE', $pattern);
+                        $query->where(function ($q) use ($pattern) {
+                            $q->where('remark', 'LIKE', $pattern)
+                                ->orWhere('remark1', 'LIKE', $pattern);
+                        });
                     }
 
                     /*
                     |--------------------------------------------------------------------------
-                    | FILTER EXCLUDE PATTERN
+                    | 6. FILTER KHUSUS REMARK1
                     |--------------------------------------------------------------------------
-                    | Exclude pattern digunakan untuk mengecualikan remark tertentu.
-                    |
-                    | Contoh:
-                    | pattern         = %JEMPUTAN%
-                    | exclude_pattern = %SLS%
-                    |
-                    | Hasil:
-                    | remark LIKE '%JEMPUTAN%'
-                    | AND remark NOT LIKE '%SLS%'
+                    | Kondisi AND terhadap filter pattern umum.
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if ($remark1Pattern !== '') {
+                        $query->where(
+                            'remark1',
+                            'LIKE',
+                            $remark1Pattern
+                        );
+                    }
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | 7. FILTER EXCLUDE PATTERN
+                    |--------------------------------------------------------------------------
+                    | Transaksi dikecualikan jika pola ditemukan pada remark ATAU remark1.
+                    | NULL diperlakukan sebagai kolom yang tidak mengandung pola.
+                    |--------------------------------------------------------------------------
                     */
 
                     if ($excludePattern !== '') {
-                        $query->where('remark', 'NOT LIKE', $excludePattern);
+                        $query->where(function ($q) use ($excludePattern) {
+                            $q->where(function ($subQuery) use ($excludePattern) {
+                                $subQuery->whereNull('remark')
+                                    ->orWhere(
+                                        'remark',
+                                        'NOT LIKE',
+                                        $excludePattern
+                                    );
+                            })->where(function ($subQuery) use ($excludePattern) {
+                                $subQuery->whereNull('remark1')
+                                    ->orWhere(
+                                        'remark1',
+                                        'NOT LIKE',
+                                        $excludePattern
+                                    );
+                            });
+                        });
                     }
 
                     /*
                     |--------------------------------------------------------------------------
-                    | RULE DENGAN EKSTRAKSI SITE DINAMIS
+                    | 8. RULE DENGAN EKSTRAKSI SITE DINAMIS
                     |--------------------------------------------------------------------------
                     */
 
                     if ($hasIdSetor) {
 
-                        $sourceField = trim((string) $rule->id_setor_field);
+                        $sourceField = trim(
+                            (string) $rule->id_setor_field
+                        );
 
-                        if (!in_array($sourceField, ['remark', 'remark1'], true)) {
+                        if (!in_array(
+                            $sourceField,
+                            ['remark', 'remark1'],
+                            true
+                        )) {
                             continue;
                         }
 
@@ -3263,7 +3310,7 @@ class StatementController extends Controller
                         ));
 
                         $length = (int) ($rule->id_setor_length ?? 0);
-                        $start  = (int) ($rule->id_setor_start ?? 0);
+                        $start = (int) ($rule->id_setor_start ?? 0);
 
                         if (
                             !in_array($method, ['LEFT', 'RIGHT', 'MID'], true)
@@ -3275,12 +3322,8 @@ class StatementController extends Controller
 
                         /*
                         |--------------------------------------------------------------------------
-                        | SUMBER SITE
+                        | 8A. SUMBER SITE
                         |--------------------------------------------------------------------------
-                        | MASTER_SETOR = cari site melalui master_setor.
-                        | REMARK       = hasil ekstraksi langsung menjadi site.
-                        | REMARK1      = hasil ekstraksi langsung menjadi site.
-                        | NULL         = default MASTER_SETOR untuk kompatibilitas.
                         */
 
                         $siteSource = strtoupper(trim(
@@ -3297,10 +3340,8 @@ class StatementController extends Controller
 
                         /*
                         |--------------------------------------------------------------------------
-                        | AMBIL TRANSAKSI SESUAI FILTER RULE
+                        | 8B. AMBIL TRANSAKSI SESUAI SELURUH FILTER
                         |--------------------------------------------------------------------------
-                        | Filter pattern dan exclude_pattern sudah diterapkan
-                        | sebelum transaksi diambil.
                         */
 
                         $rows = $query
@@ -3309,7 +3350,9 @@ class StatementController extends Controller
 
                         foreach ($rows as $row) {
 
-                            $sourceValue = (string) ($row->{$sourceField} ?? '');
+                            $sourceValue = (string) (
+                                $row->{$sourceField} ?? ''
+                            );
 
                             if ($sourceValue === '') {
                                 continue;
@@ -3317,7 +3360,7 @@ class StatementController extends Controller
 
                             /*
                             |--------------------------------------------------------------------------
-                            | EKSTRAKSI NILAI
+                            | 8C. EKSTRAKSI NILAI
                             |--------------------------------------------------------------------------
                             */
 
@@ -3339,7 +3382,7 @@ class StatementController extends Controller
                                     break;
 
                                 case 'MID':
-                                    // Posisi MID database dimulai dari 1.
+                                    // Posisi MID dimulai dari 1.
                                     $extractedValue = substr(
                                         $sourceValue,
                                         $start - 1,
@@ -3360,7 +3403,7 @@ class StatementController extends Controller
 
                             /*
                             |--------------------------------------------------------------------------
-                            | SIAPKAN DATA UPDATE
+                            | 8D. SIAPKAN DATA UPDATE
                             |--------------------------------------------------------------------------
                             */
 
@@ -3368,17 +3411,20 @@ class StatementController extends Controller
 
                             /*
                             |--------------------------------------------------------------------------
-                            | SUMBER SITE: REMARK / REMARK1
+                            | 8E. SUMBER SITE: REMARK / REMARK1
                             |--------------------------------------------------------------------------
-                            | Hasil ekstraksi langsung dipakai sebagai site.
-                            | Tidak perlu query master_setor.
                             */
 
                             if (
-                                ($siteSource === 'REMARK' && $sourceField === 'remark')
-                                || ($siteSource === 'REMARK1' && $sourceField === 'remark1')
+                                (
+                                    $siteSource === 'REMARK'
+                                    && $sourceField === 'remark'
+                                )
+                                || (
+                                    $siteSource === 'REMARK1'
+                                    && $sourceField === 'remark1'
+                                )
                             ) {
-
                                 $rowUpdate['site'] = $extractedValue;
 
                             } elseif ($siteSource === 'MASTER_SETOR') {
@@ -3396,9 +3442,8 @@ class StatementController extends Controller
                                     ->first(['site']);
 
                                 /*
-                                | Untuk rule SLS, jangan mengubah dept atau site jika
-                                | id_setor tidak ditemukan atau site master kosong.
-                                | Berlaku untuk semua bank.
+                                * Untuk rule SLS, jangan update jika site master
+                                * tidak ditemukan atau nilainya kosong.
                                 */
 
                                 if (
@@ -3407,13 +3452,14 @@ class StatementController extends Controller
                                     )) === 'SLS'
                                     && (
                                         !$master
-                                        || trim((string) ($master->site ?? '')) === ''
+                                        || trim(
+                                            (string) ($master->site ?? '')
+                                        ) === ''
                                     )
                                 ) {
                                     continue;
                                 }
 
-                                // Jika master ditemukan, gunakan site dari master.
                                 if ($master && $master->site !== null) {
                                     $rowUpdate['site'] = $master->site;
                                 }
@@ -3421,7 +3467,7 @@ class StatementController extends Controller
 
                             /*
                             |--------------------------------------------------------------------------
-                            | UPDATE SATU TRANSAKSI
+                            | 8F. UPDATE SATU TRANSAKSI
                             |--------------------------------------------------------------------------
                             */
 
@@ -3437,7 +3483,7 @@ class StatementController extends Controller
 
                         /*
                         |--------------------------------------------------------------------------
-                        | RULE BIASA: UPDATE MASSAL
+                        | 9. RULE BIASA: UPDATE MASSAL
                         |--------------------------------------------------------------------------
                         */
 

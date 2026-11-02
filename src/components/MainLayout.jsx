@@ -21,24 +21,56 @@ const MainLayout = () => {
   }, [show, closePanel]);
 
   return (
-    <CabangProvider>
-      <SidebarProvider>
-        <div className="relative flex min-h-full bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500">
+      <CabangProvider>
+          <SidebarProvider>
+              <div className="
+                  relative
+                  flex
+                  h-screen
+                  w-full
+                  overflow-hidden
+                  bg-gradient-to-br
+                  from-blue-500
+                  via-purple-500
+                  to-pink-500
+              ">
 
-          <Sidebar />
+                  {/* SIDEBAR */}
+                  <Sidebar />
 
-          <div className="flex flex-col flex-1 min-w-0">
-            <div className="flex-1 p-4 overflow-x-hidden">
-              <Outlet />
-            </div>
-          </div>
+                  {/* AREA KONTEN UTAMA */}
+                  <div className="
+                      flex
+                      flex-col
+                      flex-1
+                      min-w-0
+                      min-h-0
+                      overflow-hidden
+                  ">
 
-          <RightPanel show={show} onClose={closePanel}>
-            {content}
-          </RightPanel>
-        </div>
-      </SidebarProvider>
-    </CabangProvider>
+                      {/* OUTLET */}
+                      <div className="
+                          flex
+                          flex-col
+                          flex-1
+                          min-w-0
+                          min-h-0
+                          p-4
+                          overflow-hidden
+                      ">
+                          <Outlet />
+                      </div>
+
+                  </div>
+
+                  {/* RIGHT PANEL */}
+                  <RightPanel show={show} onClose={closePanel}>
+                      {content}
+                  </RightPanel>
+
+              </div>
+          </SidebarProvider>
+      </CabangProvider>
   );
 };
 

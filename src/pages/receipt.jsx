@@ -437,6 +437,9 @@ export default function Receipt() {
     const [activeTab, setActiveTab] =
         useState("reconciliation");
 
+    const reconFranchiseButtonRef = useRef(null);
+    const historyTypeSelectRef = useRef(null);
+    const downloadFranchiseButtonRef = useRef(null);
 
     /*
     |--------------------------------------------------------------------------
@@ -484,7 +487,8 @@ export default function Receipt() {
     const [downloadLoading, setDownloadLoading] =
         useState({
             FRC: false,
-            REG: false
+            REG: false,
+            VIRTUAL: false,
         });
 
     const [loadingAccounts, setLoadingAccounts] =
@@ -499,7 +503,10 @@ export default function Receipt() {
 
     const fileInputRef =
         useRef(null);
-
+    
+    const filePickerDropzoneRef =
+        useRef(null);
+    
     const [selectedFiles, setSelectedFiles] =
         useState([]);
 
@@ -507,6 +514,14 @@ export default function Receipt() {
     const [updateMutasiRows, setUpdateMutasiRows] = useState([]);
     const [updateMutasiHeaders, setUpdateMutasiHeaders] = useState([]);
     const [updatingMutasi, setUpdatingMutasi] = useState(false);
+
+    useEffect(() => {
+        if (activeTab === "import") {
+            requestAnimationFrame(() => {
+                filePickerDropzoneRef.current?.focus();
+            });
+        }
+    }, [activeTab]);
 
     /*
     |--------------------------------------------------------------------------
@@ -556,7 +571,7 @@ export default function Receipt() {
         setUpdateMutasiHeaders([]);
         setUpdateMutasiRows([]);
     };
-    
+        
     const handleProcessUpdateMutasi = async () => {
         if (!cabang) {
             await Swal.fire(
@@ -599,6 +614,12 @@ export default function Receipt() {
             }
         });
 
+        /*
+        |--------------------------------------------------------------------------
+        | ALIAS HEADER
+        |--------------------------------------------------------------------------
+        */
+
         const aliases = {
             mutasi: {
                 no_rek: [
@@ -611,12 +632,19 @@ export default function Receipt() {
                 remark: ["remark", "keterangan"],
                 cr: ["cr", "credit", "kredit"],
                 dept: ["dept", "kategori", "category"],
-                site: ["site"],
+                site: ["site", "kode toko", "kd toko"],
                 remark1: [
                     "remark1",
                     "remark 1",
                     "keterangan1",
                     "keterangan 1",
+                ],
+                reff: [
+                    "reff",
+                    "ref",
+                    "reference",
+                    "nomor reff",
+                    "referensi",
                 ],
             },
 
@@ -624,6 +652,9 @@ export default function Receipt() {
                 remittance_bank_account: [
                     "remittance_bank_account",
                     "remittance bank account",
+                    "no rek",
+                    "no_rek",
+                    "no rekening",
                 ],
                 receipt_number: [
                     "receipt_number",
@@ -638,8 +669,38 @@ export default function Receipt() {
                 category: ["category", "kategori"],
                 site: ["site"],
                 note: ["note", "catatan"],
+                reff: [
+                    "reff",
+                    "ref",
+                    "reference",
+                    "nomor reff",
+                    "referensi",
+                ],
+            },
+
+            unreconcile: {
+                no_rek: [
+                    "no rek",
+                    "no rekening",
+                    "no_rek",
+                    "nomor rekening",
+                ],
+                tgl: ["tgl", "tanggal"],
+                reff: [
+                    "reff",
+                    "ref",
+                    "reference",
+                    "nomor reff",
+                    "referensi",
+                ],
             },
         };
+
+        /*
+        |--------------------------------------------------------------------------
+        | PEMBENTUK INDEX KOLOM
+        |--------------------------------------------------------------------------
+        */
 
         const buildColumnIndex = (fieldAliases) => {
             const result = {};
@@ -653,7 +714,9 @@ export default function Receipt() {
                 );
 
                 if (matchedName !== undefined) {
-                    result[field] = headerMap[normalizeHeader(matchedName)];
+                    result[field] = headerMap[
+                        normalizeHeader(matchedName)
+                    ];
                 }
             }
 
@@ -662,13 +725,13 @@ export default function Receipt() {
 
         const mutasiColumns = buildColumnIndex(aliases.mutasi);
         const receiptColumns = buildColumnIndex(aliases.receipt);
+        const unreconcileColumns = buildColumnIndex(aliases.unreconcile);
 
         const hasRequiredColumns = (columns, requiredFields) =>
             requiredFields.every(
                 (field) => columns[field] !== undefined
             );
 
-        // SITE tidak wajib untuk mutasi_detail.
         const mutasiRequired = [
             "no_rek",
             "tgl",
@@ -677,11 +740,16 @@ export default function Receipt() {
             "dept",
         ];
 
-        // Category, site, dan note tidak wajib untuk receipt.
         const receiptRequired = [
             "remittance_bank_account",
             "receipt_number",
             "receipt_date",
+        ];
+
+        const unreconcileRequired = [
+            "no_rek",
+            "tgl",
+            "reff",
         ];
 
         let type;
@@ -690,6 +758,15 @@ export default function Receipt() {
         let endpoint;
         let processTitle;
         let successTitle;
+
+        /*
+        |--------------------------------------------------------------------------
+        | IDENTIFIKASI JENIS DATA
+        |--------------------------------------------------------------------------
+        | Mutasi dan receipt diperiksa lebih dahulu karena keduanya mungkin
+        | memiliki kolom REFF.
+        |--------------------------------------------------------------------------
+        */
 
         if (hasRequiredColumns(mutasiColumns, mutasiRequired)) {
             type = "mutasi_detail";
@@ -707,6 +784,18 @@ export default function Receipt() {
             endpoint = "/api/rekon/update-receipt";
             processTitle = "Proses Update Receipt?";
             successTitle = "Update Receipt Selesai";
+        } else if (
+            hasRequiredColumns(
+                unreconcileColumns,
+                unreconcileRequired
+            )
+        ) {
+            type = "unreconcile";
+            columnIndex = unreconcileColumns;
+            requiredFields = unreconcileRequired;
+            endpoint = "/api/rekon/unmatch-transaction";
+            processTitle = "Proses Unreconcile Transaction?";
+            successTitle = "Unreconcile Transaction Selesai";
         } else {
             await Swal.fire({
                 icon: "warning",
@@ -714,21 +803,32 @@ export default function Receipt() {
                 html: `
                     <div style="text-align:left;line-height:1.8">
                         <p><strong>Untuk mutasi_detail:</strong></p>
-                        <p>NO REK, TGL, REMARK, CR, DEPT (SITE opsional)</p>
+                        <p>NO REK, TGL, REMARK, CR, DEPT</p>
+
                         <hr style="margin:10px 0">
+
                         <p><strong>Untuk receipt:</strong></p>
                         <p>
-                            REMITTANCE_BANK_ACCOUNT, RECEIPT_NUMBER,
-                            RECEIPT_DATE
+                            REMITTANCE_BANK_ACCOUNT,
+                            RECEIPT_NUMBER, RECEIPT_DATE
                         </p>
-                        <p>
-                            CATEGORY, SITE, dan NOTE/CATATAN bersifat opsional.
-                        </p>
+
+                        <hr style="margin:10px 0">
+
+                        <p><strong>Untuk Unreconcile Transaction:</strong></p>
+                        <p>NO REK, TGL, REFF</p>
                     </div>
                 `,
             });
+
             return;
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | BENTUK DATA RECORD
+        |--------------------------------------------------------------------------
+        */
 
         const records = [];
         const invalidRows = [];
@@ -758,7 +858,22 @@ export default function Receipt() {
                 if (columnIndex.remark1 !== undefined) {
                     record.remark1 = getValue("remark1");
                 }
-            } else {
+
+                /*
+                |--------------------------------------------------------------------------
+                | REFF MUTASI OPSIONAL
+                |--------------------------------------------------------------------------
+                | Kirim reff hanya jika kolom tersedia dan nilainya tidak kosong.
+                */
+
+                if (columnIndex.reff !== undefined) {
+                    const reff = getValue("reff");
+
+                    if (reff !== "") {
+                        record.reff = reff;
+                    }
+                }
+            } else if (type === "receipt") {
                 record = {
                     remittance_bank_account: getValue(
                         "remittance_bank_account"
@@ -768,10 +883,11 @@ export default function Receipt() {
                 };
 
                 /*
-                * Field opsional receipt:
-                * hanya dikirim jika kolom tersedia dan nilainya
-                * tidak kosong. Sel kosong tidak akan menghapus data lama.
+                |--------------------------------------------------------------------------
+                | FIELD OPSIONAL RECEIPT
+                |--------------------------------------------------------------------------
                 */
+
                 ["category", "site", "note"].forEach((field) => {
                     if (columnIndex[field] === undefined) {
                         return;
@@ -783,6 +899,34 @@ export default function Receipt() {
                         record[field] = value;
                     }
                 });
+
+                /*
+                |--------------------------------------------------------------------------
+                | REFF RECEIPT OPSIONAL
+                |--------------------------------------------------------------------------
+                | Kirim reff hanya jika kolom tersedia dan nilainya tidak kosong.
+                */
+
+                if (columnIndex.reff !== undefined) {
+                    const reff = getValue("reff");
+
+                    if (reff !== "") {
+                        record.reff = reff;
+                    }
+                }
+            } else {
+                /*
+                |--------------------------------------------------------------------------
+                | UNRECONCILE
+                |--------------------------------------------------------------------------
+                | Hanya tiga field ini yang dikirim ke backend.
+                */
+
+                record = {
+                    no_rek: getValue("no_rek"),
+                    tgl: getValue("tgl"),
+                    reff: getValue("reff"),
+                };
             }
 
             const missingFields = requiredFields.filter(
@@ -794,11 +938,18 @@ export default function Receipt() {
                     row: row._rowNumber,
                     fields: missingFields,
                 });
+
                 return;
             }
 
             records.push(record);
         });
+
+        /*
+        |--------------------------------------------------------------------------
+        | ESCAPE HTML
+        |--------------------------------------------------------------------------
+        */
 
         const escapeHtml = (value) =>
             String(value).replace(/[&<>"']/g, (char) => ({
@@ -808,6 +959,12 @@ export default function Receipt() {
                 '"': "&quot;",
                 "'": "&#39;",
             })[char]);
+
+        /*
+        |--------------------------------------------------------------------------
+        | VALIDASI BARIS
+        |--------------------------------------------------------------------------
+        */
 
         if (invalidRows.length > 0) {
             const details = invalidRows
@@ -848,51 +1005,84 @@ export default function Receipt() {
                 "Tidak ada baris valid untuk diproses.",
                 "warning"
             );
+
             return;
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | KONFIRMASI
+        |--------------------------------------------------------------------------
+        */
+
         const escapedCabang = escapeHtml(cabang);
 
-        const optionalFieldsInfo = type === "receipt"
-            ? `
+        let typeLabel;
+        let operationInfo;
+
+        if (type === "mutasi_detail") {
+            typeLabel = "Mutasi Detail";
+            operationInfo = `
                 <div style="margin-top:10px">
-                    Category, Site, dan Note hanya akan diperbarui
-                    jika kolom tersedia dan selnya berisi nilai.
-                    Sel kosong tidak mengubah nilai lama.
-                </div>
-            `
-            : `
-                <div style="margin-top:10px">
-                    Jika SITE diisi, DEPT dan SITE akan diperbarui
-                    sesuai aturan backend. Jika SITE kosong, hanya
-                    DEPT yang akan diperbarui.
+                    DEPT dan SITE akan diperbarui sesuai aturan backend.
+                    REFF juga akan diperbarui jika kolom REFF tersedia
+                    dan nilainya tidak kosong.
                 </div>
             `;
+        } else if (type === "receipt") {
+            typeLabel = "Receipt";
+            operationInfo = `
+                <div style="margin-top:10px">
+                    Category, Site, dan Note hanya diperbarui jika kolom
+                    tersedia dan selnya berisi nilai. REFF juga akan
+                    diperbarui jika tersedia dan tidak kosong.
+                </div>
+            `;
+        } else {
+            typeLabel = "Unreconcile Transaction";
+            operationInfo = `
+                <div style="margin-top:10px;color:#b91c1c">
+                    Transaksi akan di-unmatch berdasarkan kombinasi
+                    No Rek, Tanggal, dan REFF. Pastikan ketiganya sesuai
+                    dengan transaksi yang akan dibatalkan rekonsiliasinya.
+                </div>
+            `;
+        }
 
         const confirmation = await Swal.fire({
             icon: "question",
             title: processTitle,
             html: `
                 <div style="text-align:left;line-height:1.8">
-                    <div>Jenis data:
-                        <strong>${
-                            type === "mutasi_detail"
-                                ? "Mutasi Detail"
-                                : "Receipt"
-                        }</strong>
+                    <div>
+                        Jenis proses: <strong>${typeLabel}</strong>
                     </div>
-                    <div>Cabang: <strong>${escapedCabang}</strong></div>
-                    <div>Jumlah data: <strong>${records.length}</strong></div>
-                    ${optionalFieldsInfo}
+                    <div>
+                        Cabang: <strong>${escapedCabang}</strong>
+                    </div>
+                    <div>
+                        Jumlah data: <strong>${records.length}</strong>
+                    </div>
+                    ${operationInfo}
                 </div>
             `,
             showCancelButton: true,
-            confirmButtonText: "Ya, Proses Update",
+            confirmButtonText:
+                type === "unreconcile"
+                    ? "Ya, Unmatch Transaksi"
+                    : "Ya, Proses Update",
             cancelButtonText: "Batal",
-            confirmButtonColor: "#2563eb",
+            confirmButtonColor:
+                type === "unreconcile" ? "#dc2626" : "#2563eb",
         });
 
         if (!confirmation.isConfirmed) return;
+
+        /*
+        |--------------------------------------------------------------------------
+        | KIRIM KE BACKEND
+        |--------------------------------------------------------------------------
+        */
 
         setUpdatingMutasi(true);
 
@@ -908,20 +1098,24 @@ export default function Receipt() {
                 icon: result.success ? "success" : "warning",
                 title: result.success
                     ? successTitle
-                    : "Update Selesai dengan Catatan",
+                    : "Proses Selesai dengan Catatan",
                 width: 650,
                 html: `
                     <div style="text-align:left;line-height:1.8">
-                        <div>Total data:
+                        <div>
+                            Total data:
                             <strong>${result.total ?? records.length}</strong>
                         </div>
-                        <div>Berhasil diperbarui:
+                        <div>
+                            Berhasil diproses:
                             <strong>${result.updated ?? 0}</strong>
                         </div>
-                        <div>Dilewati:
+                        <div>
+                            Dilewati:
                             <strong>${result.skipped ?? 0}</strong>
                         </div>
-                        <div>Gagal:
+                        <div>
+                            Gagal:
                             <strong>${result.failed ?? 0}</strong>
                         </div>
                         ${
@@ -929,9 +1123,11 @@ export default function Receipt() {
                             result.errors.length
                                 ? `
                                     <hr style="margin:12px 0">
-                                    <div><strong>
-                                        Detail error (maksimal 10):
-                                    </strong></div>
+                                    <div>
+                                        <strong>
+                                            Detail error (maksimal 10):
+                                        </strong>
+                                    </div>
                                     <ul style="padding-left:20px;
                                         max-height:250px;overflow-y:auto">
                                         ${result.errors
@@ -961,7 +1157,7 @@ export default function Receipt() {
             });
         } catch (error) {
             console.error(
-                `Update ${type} error:`,
+                `Proses ${type} error:`,
                 error.response?.status,
                 error.response?.data || error.message
             );
@@ -972,11 +1168,11 @@ export default function Receipt() {
                 data?.message ||
                 data?.error ||
                 error.message ||
-                `Terjadi kesalahan saat memperbarui ${type}.`;
+                `Terjadi kesalahan saat memproses ${type}.`;
 
             await Swal.fire({
                 icon: "error",
-                title: `Update Gagal (${
+                title: `Proses Gagal (${
                     error.response?.status || "Network Error"
                 })`,
                 text: message,
@@ -988,7 +1184,6 @@ export default function Receipt() {
             setUpdatingMutasi(false);
         }
     };
-
 
     /*
     |--------------------------------------------------------------------------
@@ -2816,91 +3011,96 @@ export default function Receipt() {
     */
 
     const handleDownloadReconciliation = async (type) => {
+        /*
+        |--------------------------------------------------------------------------
+        | KONFIGURASI JENIS REKONSILIASI
+        |--------------------------------------------------------------------------
+        */
+
+        const reconciliationTypes = {
+            FRC: {
+                name: "Franchise",
+                fileName: "Franchise",
+            },
+            REG: {
+                name: "Reguler",
+                fileName: "Reguler",
+            },
+            VIRTUAL: {
+                name: "Virtual",
+                fileName: "Virtual",
+            },
+        };
+
+        const selectedType = reconciliationTypes[type];
 
         /*
         |--------------------------------------------------------------------------
         | VALIDASI CABANG
         |--------------------------------------------------------------------------
         */
-    
+
         if (!cabang) {
-    
             await Swal.fire({
                 icon: "warning",
                 title: "Cabang Belum Tersedia",
-                text: "Cabang belum tersedia."
+                text: "Silakan pilih cabang terlebih dahulu.",
             });
-    
+
             return;
         }
-    
-    
+
         /*
         |--------------------------------------------------------------------------
         | VALIDASI PERIODE
         |--------------------------------------------------------------------------
         */
-    
+
         if (!period?.id) {
-    
             await Swal.fire({
                 icon: "warning",
                 title: "Periode Belum Tersedia",
-                text: "Periode aktif belum tersedia."
+                text: "Periode aktif belum tersedia.",
             });
-    
+
             return;
         }
-    
-    
+
         /*
         |--------------------------------------------------------------------------
         | VALIDASI TYPE
         |--------------------------------------------------------------------------
         */
-    
-        if (!["FRC", "REG"].includes(type)) {
-    
+
+        if (!selectedType) {
             await Swal.fire({
                 icon: "error",
                 title: "Jenis Rekonsiliasi Tidak Valid",
-                text: "Jenis rekonsiliasi tidak dikenali."
+                text: "Jenis rekonsiliasi tidak dikenali.",
             });
-    
+
             return;
         }
-    
-    
-        /*
-        |--------------------------------------------------------------------------
-        | NAMA TYPE
-        |--------------------------------------------------------------------------
-        */
-    
-        const typeName =
-            type === "FRC"
-                ? "Franchise"
-                : "Reguler";
-    
-    
+
+        const typeName = selectedType.name;
+
         /*
         |--------------------------------------------------------------------------
         | SET LOADING
         |--------------------------------------------------------------------------
         */
-    
-        setDownloadLoading(prev => ({
+
+        setDownloadLoading((prev) => ({
             ...prev,
-            [type]: true
+            [type]: true,
         }));
-    
-    
+
         /*
         |--------------------------------------------------------------------------
-        | LOADING ALERT
+        | TAMPILKAN LOADING
         |--------------------------------------------------------------------------
         */
-    
+
         Swal.fire({
             title: "Menyiapkan File...",
             text: `Sedang menyiapkan hasil rekonsiliasi ${typeName}.`,
@@ -2908,522 +3108,281 @@ export default function Receipt() {
             allowEscapeKey: false,
             showConfirmButton: false,
             didOpen: () => {
-    
                 Swal.showLoading();
-    
-            }
+            },
         });
-    
-    
+
+        let objectUrl = null;
+        let downloadLink = null;
+
         try {
-    
             /*
             |--------------------------------------------------------------------------
             | REQUEST EXPORT
             |--------------------------------------------------------------------------
+            | VIRTUAL sementara menggunakan endpoint yang sama.
+            | Backend harus mendukung parameter type = VIRTUAL.
+            |--------------------------------------------------------------------------
             */
-    
-            const response =
-                await axios.get(
-                    "/api/rekon/receipt/export",
-                    {
-                        params: {
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | CABANG
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            cabang: cabang,
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | PERIODE
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            period_id:
-                                period.id,
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | TYPE
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            type: type,
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | SEMUA REKENING
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            account: "",
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | SEMUA HASIL
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            result: "",
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | TANPA SEARCH
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            search: ""
-                        },
-    
-    
-                        /*
-                        |--------------------------------------------------------------------------
-                        | RESPONSE EXCEL
-                        |--------------------------------------------------------------------------
-                        */
-    
-                        responseType: "blob"
-                    }
-                );
-    
-    
+
+            const response = await axios.get(
+                "/api/rekon/receipt/export",
+                {
+                    params: {
+                        cabang: cabang,
+                        period_id: period.id,
+                        type: type,
+                        account: "",
+                        result: "",
+                        search: "",
+                    },
+                    responseType: "blob",
+                }
+            );
+
             /*
             |--------------------------------------------------------------------------
-            | CEK RESPONSE
+            | VALIDASI CONTENT TYPE
             |--------------------------------------------------------------------------
-            |
-            | Karena responseType = blob, response.data selalu berupa Blob.
-            |
-            | Kita harus memastikan backend benar-benar mengirim file Excel.
-            |
             */
-    
+
             const contentType =
                 response?.headers?.["content-type"] || "";
-    
-    
+
             /*
             |--------------------------------------------------------------------------
-            | JIKA BACKEND MENGIRIM ERROR JSON
+            | BACA ERROR JSON DARI BACKEND
             |--------------------------------------------------------------------------
-            |
-            | Misalnya Laravel mengirim:
-            |
-            | {
-            |     success: false,
-            |     message: "...",
-            |     error: "SQLSTATE..."
-            | }
-            |
-            | Karena axios menggunakan responseType blob,
-            | response tersebut tetap diterima sebagai Blob.
-            |
             */
-    
+
             if (
                 contentType.includes("application/json") ||
                 contentType.includes("text/json")
             ) {
-    
-                const text =
-                    await response.data.text();
-    
-    
+                const responseText = await response.data.text();
+
                 let json = null;
-    
-    
+
                 try {
-    
-                    json =
-                        JSON.parse(text);
-    
-                } catch (parseError) {
-    
-                    console.error(
-                        "Gagal parse response JSON:",
-                        parseError
-                    );
-    
+                    json = JSON.parse(responseText);
+                } catch {
+                    // Response bukan JSON valid.
                 }
-    
-    
-                const backendMessage =
+
+                throw new Error(
                     json?.error ||
                     json?.message ||
-                    "Backend mengembalikan response error.";
-    
-    
-                throw new Error(
-                    backendMessage
+                    `Backend gagal menyiapkan file rekonsiliasi ${typeName}.`
                 );
             }
-    
-    
+
             /*
             |--------------------------------------------------------------------------
             | VALIDASI BLOB
             |--------------------------------------------------------------------------
             */
-    
+
             if (!(response.data instanceof Blob)) {
-    
                 throw new Error(
-                    "Response server bukan file Excel."
+                    "Response server bukan file yang dapat diunduh."
                 );
             }
-    
-    
+
+            if (response.data.size === 0) {
+                throw new Error(
+                    "File hasil rekonsiliasi yang diterima kosong."
+                );
+            }
+
             /*
             |--------------------------------------------------------------------------
-            | VALIDASI UKURAN FILE
+            | VALIDASI FORMAT EXCEL
+            |--------------------------------------------------------------------------
+            | Jika server mengirim tipe selain Excel, hentikan proses.
             |--------------------------------------------------------------------------
             */
-    
-            if (response.data.size === 0) {
-    
+
+            const isExcel =
+                contentType.includes(
+                    "spreadsheetml"
+                ) ||
+                contentType.includes(
+                    "application/vnd.ms-excel"
+                ) ||
+                contentType.includes(
+                    "application/octet-stream"
+                );
+
+            if (!isExcel) {
+                const responseText = await response.data.text();
+
                 throw new Error(
-                    "File Excel yang diterima kosong."
+                    responseText
+                        ? `Format response server tidak sesuai: ${responseText.slice(0, 250)}`
+                        : "Server tidak mengirim file Excel yang valid."
                 );
             }
-    
-    
+
             /*
             |--------------------------------------------------------------------------
             | BUAT BLOB EXCEL
             |--------------------------------------------------------------------------
             */
-    
-            const blob =
-                new Blob(
-                    [
-                        response.data
-                    ],
-                    {
-                        type:
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    }
-                );
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | CREATE OBJECT URL
-            |--------------------------------------------------------------------------
-            */
-    
-            const url =
-                window.URL.createObjectURL(
-                    blob
-                );
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | CREATE DOWNLOAD LINK
-            |--------------------------------------------------------------------------
-            */
-    
-            const link =
-                document.createElement(
-                    "a"
-                );
-    
-    
-            link.href =
-                url;
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | NAMA FILE
-            |--------------------------------------------------------------------------
-            */
-    
-            const periodeName =
-                period?.periode ||
-                "Periode";
-    
-    
-            link.download =
-                `Rekonsiliasi_${typeName}_${cabang}_${periodeName}.xlsx`;
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | TRIGGER DOWNLOAD
-            |--------------------------------------------------------------------------
-            */
-    
-            document.body.appendChild(
-                link
+
+            const blob = new Blob(
+                [response.data],
+                {
+                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                }
             );
-    
-            link.click();
-    
-            document.body.removeChild(
-                link
-            );
-    
-    
+
             /*
             |--------------------------------------------------------------------------
-            | RELEASE OBJECT URL
+            | BUAT OBJECT URL
             |--------------------------------------------------------------------------
             */
-    
-            window.URL.revokeObjectURL(
-                url
-            );
-    
-    
+
+            objectUrl = window.URL.createObjectURL(blob);
+
             /*
             |--------------------------------------------------------------------------
-            | TUTUP LOADING
+            | BUAT NAMA FILE
             |--------------------------------------------------------------------------
             */
-    
+
+            const periodeName = String(
+                period?.periode || `Periode_${period.id}`
+            ).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+
+            const cabangName = String(cabang)
+                .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+
+            const fileName =
+                `Rekonsiliasi_${selectedType.fileName}_${cabangName}_${periodeName}.xlsx`;
+
+            /*
+            |--------------------------------------------------------------------------
+            | DOWNLOAD FILE
+            |--------------------------------------------------------------------------
+            */
+
+            downloadLink = document.createElement("a");
+            downloadLink.href = objectUrl;
+            downloadLink.download = fileName;
+
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+
+            /*
+            |--------------------------------------------------------------------------
+            | SUKSES
+            |--------------------------------------------------------------------------
+            */
+
             Swal.close();
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | SUCCESS
-            |--------------------------------------------------------------------------
-            */
-    
+
             await Swal.fire({
                 icon: "success",
                 title: "Download Berhasil",
-                text:
-                    `Hasil rekonsiliasi ${typeName} berhasil diunduh.`,
+                text: `Hasil rekonsiliasi ${typeName} berhasil diunduh.`,
                 timer: 1800,
-                showConfirmButton: false
+                showConfirmButton: false,
             });
-    
-    
         } catch (error) {
-    
-            /*
-            |--------------------------------------------------------------------------
-            | LOG ERROR
-            |--------------------------------------------------------------------------
-            */
-    
             console.error(
-                "Download rekonsiliasi error:",
+                `Download rekonsiliasi ${typeName} error:`,
                 error
             );
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | DEFAULT ERROR MESSAGE
-            |--------------------------------------------------------------------------
-            */
-    
+
             let message =
-                "File Excel gagal diunduh.";
-    
-    
+                `File rekonsiliasi ${typeName} gagal diunduh.`;
+
+            const response = error?.response;
+
             /*
             |--------------------------------------------------------------------------
-            | RESPONSE DARI SERVER
+            | BACA ERROR DARI RESPONSE AXIOS
             |--------------------------------------------------------------------------
             */
-    
-            const response =
-                error?.response;
-    
-    
+
             if (response?.data) {
-    
                 try {
-    
-                    /*
-                    |--------------------------------------------------------------------------
-                    | RESPONSE BLOB
-                    |--------------------------------------------------------------------------
-                    */
-    
-                    if (
-                        response.data instanceof Blob
-                    ) {
-    
-                        const text =
+                    if (response.data instanceof Blob) {
+                        const responseText =
                             await response.data.text();
-    
-    
-                        console.error(
-                            "Response error dari backend:",
-                            text
-                        );
-    
-    
-                        /*
-                        |--------------------------------------------------------------------------
-                        | COBA PARSE JSON
-                        |--------------------------------------------------------------------------
-                        */
-    
+
                         try {
-    
-                            const json =
-                                JSON.parse(text);
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | PRIORITASKAN ERROR DETAIL
-                            |--------------------------------------------------------------------------
-                            */
-    
+                            const json = JSON.parse(responseText);
+
                             message =
                                 json?.error ||
                                 json?.message ||
                                 message;
-    
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | JIKA ADA LINE ERROR
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            if (
-                                json?.line &&
-                                json?.file
-                            ) {
-    
+
+                            if (json?.file && json?.line) {
                                 message +=
                                     ` (${json.file}:${json.line})`;
-    
                             }
-    
-                        } catch (jsonError) {
-    
-                            /*
-                            |--------------------------------------------------------------------------
-                            | RESPONSE BUKAN JSON
-                            |--------------------------------------------------------------------------
-                            */
-    
-                            console.error(
-                                "Response bukan JSON:",
-                                jsonError
-                            );
-    
-    
-                            if (text) {
-    
-                                message =
-                                    text;
-    
+                        } catch {
+                            if (responseText.trim()) {
+                                message = responseText.slice(0, 1000);
                             }
-    
                         }
-    
-                    }
-    
-                    /*
-                    |--------------------------------------------------------------------------
-                    | RESPONSE OBJECT BIASA
-                    |--------------------------------------------------------------------------
-                    */
-    
-                    else if (
+                    } else if (
                         typeof response.data === "object"
                     ) {
-    
                         message =
                             response.data?.error ||
                             response.data?.message ||
                             message;
-    
                     }
-    
                 } catch (readError) {
-    
                     console.error(
                         "Gagal membaca response error:",
                         readError
                     );
-    
                 }
-    
+            } else if (error?.message) {
+                message = error.message;
             }
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | ERROR DARI AXIOS
-            |--------------------------------------------------------------------------
-            */
-    
-            if (
-                message ===
-                "File Excel gagal diunduh."
-            ) {
-    
-                if (
-                    error?.message
-                ) {
-    
-                    message =
-                        error.message;
-    
-                }
-    
-            }
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | TUTUP LOADING
-            |--------------------------------------------------------------------------
-            */
-    
+
             Swal.close();
-    
-    
-            /*
-            |--------------------------------------------------------------------------
-            | TAMPILKAN ERROR
-            |--------------------------------------------------------------------------
-            */
-    
+
             await Swal.fire({
                 icon: "error",
                 title: "Download Gagal",
                 text: message,
-                confirmButtonText: "OK"
+                confirmButtonText: "OK",
             });
-    
-    
         } finally {
-    
+            /*
+            |--------------------------------------------------------------------------
+            | BERSIHKAN OBJECT URL DAN LINK
+            |--------------------------------------------------------------------------
+            */
+
+            if (downloadLink?.parentNode) {
+                downloadLink.parentNode.removeChild(downloadLink);
+            }
+
+            if (objectUrl) {
+                window.URL.revokeObjectURL(objectUrl);
+            }
+
             /*
             |--------------------------------------------------------------------------
             | RESET LOADING
             |--------------------------------------------------------------------------
             */
-    
-            setDownloadLoading(prev => ({
+
+            setDownloadLoading((prev) => ({
                 ...prev,
-                [type]: false
+                [type]: false,
             }));
-    
         }
-    
     };
+
     
     /*
     |--------------------------------------------------------------------------
@@ -3754,77 +3713,124 @@ export default function Receipt() {
 
     useEffect(() => {
 
-        const handleKeyDown =
-            event => {
-                if (
-                    event.altKey &&
-                    event.code ===
-                        "KeyU"
-                ) {
+        const handleKeyDown = (event) => {
 
-                    event.preventDefault();
+            // Hanya gunakan kombinasi Alt tanpa Ctrl / Meta
+            if (
+                !event.altKey ||
+                event.ctrlKey ||
+                event.metaKey
+            ) {
+                return;
+            }
 
-                    setActiveTab(
-                        "import"
-                    );
+            /*
+            |--------------------------------------------------------------------------
+            | ALT + 1 SAMPAI ALT + 5 = PINDAH TAB
+            |--------------------------------------------------------------------------
+            */
 
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Alt + R = Jalankan Rekonsiliasi
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    event.altKey &&
-                    event.code ===
-                        "KeyR"
-                ) {
-
-                    event.preventDefault();
-
-                    if (
-                        activeTab ===
-                        "reconciliation"
-                    ) {
-
-                        runReconciliation();
-
-                    }
-
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Alt + X = Sidebar
-                |--------------------------------------------------------------------------
-                */
-
-                if (
-                    event.altKey &&
-                    event.code ===
-                        "KeyX"
-                ) {
-
-                    e.preventDefault();
-
-                    setIsCollapsed(prev => !prev);
-                    
-                    return;
-
-                }
-
+            const tabShortcuts = {
+                Digit1: "import",
+                Digit2: "update-mutasi",
+                Digit3: "reconciliation",
+                Digit4: "history",
+                Digit5: "download",
             };
 
+            const targetTab = tabShortcuts[event.code];
+
+            if (targetTab) {
+                event.preventDefault();
+                setActiveTab(targetTab);
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | ALT + S = FOKUS BERDASARKAN TAB AKTIF
+            |--------------------------------------------------------------------------
+            */
+
+            if (event.code === "KeyS") {
+
+                event.preventDefault();
+
+                if (activeTab === "reconciliation") {
+                    reconFranchiseButtonRef.current?.focus();
+                    return;
+                }
+
+                if (activeTab === "history") {
+                    historyTypeSelectRef.current?.focus();
+                    return;
+                }
+
+                if (activeTab === "download") {
+                    downloadFranchiseButtonRef.current?.focus();
+                    return;
+                }
+
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | ALT + R = JALANKAN REKONSILIASI
+            |--------------------------------------------------------------------------
+            */
+
+            if (event.code === "KeyR") {
+
+                event.preventDefault();
+
+                if (activeTab === "reconciliation") {
+                    runReconciliation();
+                }
+
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | ALT + X = BUKA / TUTUP SIDEBAR
+            |--------------------------------------------------------------------------
+            */
+
+            if (event.code === "KeyX") {
+
+                event.preventDefault();
+
+                setIsCollapsed(prev => !prev);
+
+                return;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | ALT + U = IMPORT RECEIPT (SHORTCUT LAMA)
+            |--------------------------------------------------------------------------
+            |
+            | Dipertahankan sebagai kompatibilitas.
+            | Shortcut utama Import Receipt sekarang Alt + 1.
+            |--------------------------------------------------------------------------
+            */
+
+            if (event.code === "KeyU") {
+
+                event.preventDefault();
+
+                setActiveTab("import");
+
+                return;
+            }
+
+        };
 
         window.addEventListener(
             "keydown",
             handleKeyDown
         );
-
 
         return () => {
 
@@ -3838,7 +3844,7 @@ export default function Receipt() {
     }, [
         activeTab,
         runReconciliation,
-        isCollapsed
+        setIsCollapsed
     ]);
 
     /*
@@ -4052,69 +4058,118 @@ export default function Receipt() {
         cabang,
         resetReconciliation
     ]);
-
-
+        
     const fetchHistoryFilters = async () => {
-
         if (!cabang) {
             setHistoryBanks([]);
             setHistoryAccounts([]);
             return;
         }
-
+    
         try {
-
-            const response =
-                await axios.get(
+            if (historyType === "REG") {
+                const response = await axios.get(
+                    "/api/rekon/rekening",
+                    {
+                        params: {
+                            cabang,
+                            type: "REG",
+                        },
+                    }
+                );
+    
+                const result = response?.data || {};
+    
+                if (!result.success) {
+                    throw new Error(
+                        result.message || "Gagal memuat daftar rekening."
+                    );
+                }
+    
+                const rawList = Array.isArray(result.data)
+                    ? result.data
+                    : [];
+    
+                const uniqueAccounts = [
+                    ...new Map(
+                        rawList
+                            .map((item) => {
+                                const no_rek = String(
+                                    item?.no_rek ?? ""
+                                ).trim();
+    
+                                if (!no_rek) return null;
+    
+                                return [
+                                    no_rek,
+                                    {
+                                        no_rek,
+                                        jns_bank: String(
+                                            item?.jns_bank ?? ""
+                                        ).trim(),
+                                        akun: String(
+                                            item?.akun ?? ""
+                                        ).trim(),
+                                    },
+                                ];
+                            })
+                            .filter(Boolean)
+                    ).values(),
+                ];
+    
+                setHistoryAccounts(uniqueAccounts);
+                setHistoryBanks([]);
+            } else {
+                const response = await axios.get(
                     "/api/rekon/history/filters",
                     {
                         params: {
                             cabang,
-                            type: historyType
-                        }
+                            type: "FRC",
+                        },
                     }
                 );
-
-            const result =
-                response?.data || {};
-
-            if (!result.success) {
-
-                throw new Error(
-                    result.message ||
-                    "Filter histori gagal dimuat."
-                );
+    
+                const result = response?.data || {};
+    
+                if (!result.success) {
+                    throw new Error(
+                        result.message || "Filter histori gagal dimuat."
+                    );
+                }
+    
+                const uniqueBanks = [
+                    ...new Map(
+                        (result.banks || [])
+                            .map((bank) => {
+                                const name = String(
+                                    typeof bank === "string"
+                                        ? bank
+                                        : bank?.jns_bank ?? ""
+                                ).trim();
+    
+                                return [name.toLowerCase(), name];
+                            })
+                            .filter(([key]) => key)
+                    ).values(),
+                ];
+    
+                setHistoryBanks(uniqueBanks);
+                setHistoryAccounts([]);
             }
-
-            setHistoryBanks(
-                Array.isArray(result.banks)
-                    ? result.banks
-                    : []
-            );
-
-            setHistoryAccounts(
-                Array.isArray(result.accounts)
-                    ? result.accounts
-                    : []
-            );
-
         } catch (error) {
-
-            console.error(
-                "History filter error:",
-                error
-            );
-
+            console.error("History filter error:", error);
+    
             setHistoryBanks([]);
             setHistoryAccounts([]);
-
+    
             await Swal.fire({
                 icon: "error",
                 title: "Gagal Memuat Filter",
                 text: getErrorMessage(
                     error,
                     "Daftar filter histori gagal dimuat."
-                )
+                ),
             });
         }
     };
@@ -4168,19 +4223,18 @@ export default function Receipt() {
                         "/api/rekon/history",
                         {
                             params: {
-
                                 cabang,
+                                type: historyType,
 
-                                type:
-                                    historyType,
-
+                                // FRC menggunakan jns_bank.
                                 jns_bank:
-                                    historyBank !== "ALL"
+                                    historyType === "FRC" && historyBank !== "ALL"
                                         ? historyBank
                                         : "",
 
+                                // REG menggunakan no_rek.
                                 no_rek:
-                                    historyAccount !== "ALL"
+                                    historyType === "REG" && historyAccount !== "ALL"
                                         ? historyAccount
                                         : "",
 
@@ -4189,14 +4243,10 @@ export default function Receipt() {
                                         ? historyCategory
                                         : "",
 
-                                date_start:
-                                    historyDateStart || "",
+                                date_start: historyDateStart || "",
+                                date_end: historyDateEnd || "",
 
-                                date_end:
-                                    historyDateEnd || "",
-
-                                search:
-                                    historySearch.trim()
+                                search: historySearch.trim(),
                             }
                         }
                     );
@@ -4255,428 +4305,203 @@ export default function Receipt() {
                 );
             }
         };
-
-    const filteredHistoryData =
-        useMemo(() => {
-
-            const keyword =
-                historySearch
-                    .trim()
-                    .toLowerCase();
-
-
-            return historyData.filter(
-                item => {
-
-                    const category =
-                        getResultCategory(
-                            item
-                        );
-
-
-                    if (
-                        historyCategory !==
-                        "ALL" &&
-                        category !==
-                        historyCategory
-                    ) {
-
-                        return false;
-                    }
-
-
-                    if (
-                        historyBank !==
-                        "ALL" &&
-                        String(
-                            item.jns_bank || ""
-                        ).trim()
-                        !==
-                        String(
-                            historyBank
-                        ).trim()
-                    ) {
-
-                        return false;
-                    }
-
-
-                    const account =
-                        item.no_rek ||
-                        item.remittance_bank_account ||
-                        "";
-
-
-                    if (
-                        historyAccount !==
-                        "ALL" &&
-                        String(account).trim()
-                        !==
-                        String(historyAccount).trim()
-                    ) {
-
-                        return false;
-                    }
-
-
-                    if (
-                        historyDateStart
-                    ) {
-
-                        const date =
-                            String(
-                                item.mutasi_date ||
-                                item.receipt_date ||
-                                ""
-                            ).substring(0, 10);
-
-
-                        if (
-                            date <
-                            historyDateStart
-                        ) {
-
-                            return false;
-                        }
-                    }
-
-
-                    if (
-                        historyDateEnd
-                    ) {
-
-                        const date =
-                            String(
-                                item.mutasi_date ||
-                                item.receipt_date ||
-                                ""
-                            ).substring(0, 10);
-
-
-                        if (
-                            date >
-                            historyDateEnd
-                        ) {
-
-                            return false;
-                        }
-                    }
-
-
-                    if (!keyword) {
-                        return true;
-                    }
-
-
-                    const searchable = [
-
-                        item.reff,
-
-                        item.no_rek,
-
-                        item.remittance_bank_account,
-
-                        item.jns_bank,
-
-                        item.receipt_number,
-
-                        item.mutation_number,
-
-                        item.description,
-
-                        item.comments,
-
-                        item.receipt_status,
-
-                        item.receipt_state
-
-                    ]
-                        .filter(Boolean)
-                        .join(" ")
-                        .toLowerCase();
-
-
-                    return searchable.includes(
-                        keyword
-                    );
-                }
-            );
-
-        }, [
-            historyData,
-            historySearch,
-            historyCategory,
-            historyBank,
-            historyAccount,
-            historyDateStart,
-            historyDateEnd
-        ]);
-
-    const selectManualReceipt = (
-        item
-    ) => {
-
-        setManualReceipt(
-            current =>
-                current?.id === item.id
-                    ? null
-                    : item
-        );
-    };
-
-    const selectManualMutasi = (
-        item
-    ) => {
-
-        setManualMutasi(
-            current =>
-                current?.id === item.id
-                    ? null
-                    : item
-        );
-    };
-
-    const executeManualReconciliation =
-        async () => {
-
-            if (manualReconLoading) {
-                return;
-            }
-
-
-            if (!manualReceipt) {
-
-                await Swal.fire({
-                    icon: "warning",
-                    title: "Receipt Belum Dipilih",
-                    text: "Pilih data Receipt terlebih dahulu."
-                });
-
-                return;
-            }
-
-
-            if (!manualMutasi) {
-
-                await Swal.fire({
-                    icon: "warning",
-                    title: "Mutasi Belum Dipilih",
-                    text: "Pilih data Mutasi terlebih dahulu."
-                });
-
-                return;
-            }
-
-
-            const receiptAmount =
-                Number(
-                    manualReceipt.receipt_amount ||
-                    0
-                );
-
-
-            const mutasiAmount =
-                Number(
-                    manualMutasi.mutasi_amount ||
-                    manualMutasi.cr ||
-                    0
-                );
-
-
-            const difference =
-                receiptAmount -
-                mutasiAmount;
-
-
-            const confirm =
-                await Swal.fire({
-
-                    icon:
-                        difference === 0
-                            ? "question"
-                            : "warning",
-
-                    title:
-                        "Konfirmasi Rekonsiliasi Manual",
-
-                    html: `
-                        <div style="text-align:left">
-
-                            <p>
-                                <strong>Receipt</strong>
-                            </p>
-
-                            <p>
-                                No:
-                                ${manualReceipt.receipt_number || "-"}
-                            </p>
-
-                            <p>
-                                Nominal:
-                                ${formatCurrency(receiptAmount)}
-                            </p>
-
-                            <hr style="margin:12px 0">
-
-                            <p>
-                                <strong>Mutasi</strong>
-                            </p>
-
-                            <p>
-                                ID:
-                                ${manualMutasi.id}
-                            </p>
-
-                            <p>
-                                Nominal:
-                                ${formatCurrency(mutasiAmount)}
-                            </p>
-
-                            <hr style="margin:12px 0">
-
-                            <p>
-                                Selisih:
-                                <strong>
-                                    ${formatCurrency(difference)}
-                                </strong>
-                            </p>
-
-                        </div>
-                    `,
-
-                    showCancelButton:
-                        true,
-
-                    confirmButtonText:
-                        "Ya, Rekonsiliasi",
-
-                    cancelButtonText:
-                        "Batal"
-                });
-
+    
+    const filteredHistoryData = useMemo(() => {
+        const keyword = historySearch.trim().toLowerCase();
+
+        return historyData.filter((item) => {
+            // Filter kategori hasil rekonsiliasi.
+            const category = getResultCategory(item);
 
             if (
-                !confirm.isConfirmed
+                historyCategory !== "ALL" &&
+                category !== historyCategory
             ) {
-
-                return;
+                return false;
             }
 
+            // Pencarian bebas pada data hasil.
+            if (!keyword) {
+                return true;
+            }
 
-            setManualReconLoading(
-                true
+            const searchable = [
+                item.reff,
+                item.no_rek,
+                item.remittance_bank_account,
+                item.jns_bank,
+                item.akun,
+                item.receipt_number,
+                item.mutation_number,
+                item.description,
+                item.comments,
+                item.receipt_status,
+                item.receipt_state,
+            ]
+                .filter(Boolean)
+                .join(" ")
+                .toLowerCase();
+
+            return searchable.includes(keyword);
+        });
+    }, [
+        historyData,
+        historySearch,
+        historyCategory,
+    ]);
+
+    const [deletingReceiptId, setDeletingReceiptId] = useState(null);
+
+    const handleDeleteReceipt = async (receipt, item) => {
+
+        // Pastikan hanya RECEIPT_ONLY yang dapat dihapus.
+        if (item?.status !== "RECEIPT_ONLY") {
+            await Swal.fire({
+                icon: "warning",
+                title: "Tidak Dapat Dihapus",
+                text: "Receipt hanya dapat dihapus jika statusnya Receipt Only."
+            });
+
+            return;
+        }
+
+        if (!cabang) {
+            await Swal.fire({
+                icon: "warning",
+                title: "Cabang Belum Tersedia",
+                text: "Cabang belum tersedia."
+            });
+
+            return;
+        }
+
+        const receiptId = receipt?.id;
+        const receiptNumber = String(
+            receipt?.receipt_number ?? ""
+        ).trim();
+
+        const noRek = String(
+            receipt?.no_rek || item?.no_rek || ""
+        ).trim();
+
+        if (!receiptId || !receiptNumber || !noRek) {
+            await Swal.fire({
+                icon: "error",
+                title: "Data Tidak Lengkap",
+                text: "ID receipt, nomor receipt, atau rekening tidak tersedia."
+            });
+
+            return;
+        }
+
+        // Konfirmasi penghapusan.
+        const confirmation = await Swal.fire({
+            icon: "warning",
+            title: "Hapus Receipt?",
+            html: `
+                <div style="text-align:left">
+                    <p>Anda akan menghapus receipt berikut:</p>
+                    <br/>
+                    <p><b>Nomor Receipt:</b> ${receiptNumber}</p>
+                    <p><b>No. Rekening:</b> ${noRek}</p>
+                    <br/>
+                    <p style="color:#dc2626">
+                        Data yang dihapus tidak dapat dikembalikan.
+                    </p>
+                </div>
+            `,
+            showCancelButton: true,
+            confirmButtonText: "Ya, Hapus",
+            cancelButtonText: "Batal",
+            confirmButtonColor: "#dc2626",
+            cancelButtonColor: "#6b7280",
+            reverseButtons: true
+        });
+
+        if (!confirmation.isConfirmed) {
+            return;
+        }
+
+        setDeletingReceiptId(receiptId);
+
+        try {
+
+            const response = await axios.post(
+                "/api/rekon/receipt/delete",
+                {
+                    cabang,
+                    type: historyType,
+                    no_rek: noRek,
+                    receipt_id: receiptId,
+                    receipt_number: receiptNumber
+                }
             );
 
+            const result = response?.data || {};
 
-            try {
-
-                const response =
-                    await axios.post(
-                        "/api/rekon/manual",
-                        {
-
-                            cabang,
-
-                            type:
-                                historyType,
-
-                            receipt_id:
-                                manualReceipt.id,
-
-                            mutasi_id:
-                                manualMutasi.id
-                        }
-                    );
-
-
-                const result =
-                    response?.data || {};
-
-
-                if (
-                    !result.success
-                ) {
-
-                    throw new Error(
-                        result.message ||
-                        "Rekonsiliasi manual gagal."
-                    );
-                }
-
-
-                await Swal.fire({
-                    icon: "success",
-                    title: "Berhasil",
-                    text:
-                        result.message ||
-                        "Rekonsiliasi manual berhasil dilakukan.",
-                    confirmButtonText: "OK"
-                });
-
-
-                setManualReceipt(
-                    null
-                );
-
-                setManualMutasi(
-                    null
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | REFRESH HASIL HISTORI
-                |--------------------------------------------------------------------------
-                */
-
-                await searchReconciliationHistory();
-
-
-            } catch (error) {
-
-                console.error(
-                    "Manual reconciliation error:",
-                    error
-                );
-
-
-                await Swal.fire({
-                    icon: "error",
-                    title: "Rekonsiliasi Manual Gagal",
-                    text: getErrorMessage(
-                        error,
-                        "Rekonsiliasi manual gagal dilakukan."
-                    )
-                });
-
-            } finally {
-
-                setManualReconLoading(
-                    false
+            if (!result.success) {
+                throw new Error(
+                    result.message || "Receipt gagal dihapus."
                 );
             }
-        };
+
+            await Swal.fire({
+                icon: "success",
+                title: "Berhasil",
+                text: result.message || "Receipt berhasil dihapus.",
+                timer: 1800,
+                showConfirmButton: false
+            });
+
+            // Muat ulang histori menggunakan filter yang sedang aktif.
+            await searchReconciliationHistory();
+
+        } catch (error) {
+
+            console.error(
+                "Delete receipt error:",
+                error
+            );
+
+            await Swal.fire({
+                icon: "error",
+                title: "Gagal Menghapus Receipt",
+                text: getErrorMessage(
+                    error,
+                    "Receipt gagal dihapus."
+                )
+            });
+
+        } finally {
+
+            setDeletingReceiptId(null);
+
+        }
+    };
 
     return (
 
         <main className="
             flex-1
+            min-h-0
+            min-w-0
             px-3
             py-2
             z-10
             text-gray-800
+            overflow-hidden
         ">
 
             <div className="
-                min-h-[calc(100vh-50px)]
+                h-full
+                min-h-0
+                min-w-0
                 bg-white/60
                 rounded-lg
                 shadow-lg
-                overflow-hidden
-                overflow-y: auto
+                overflow-y-auto
+                overflow-x-auto
             ">
-
-
                 {/* ==========================================================
                     HEADER
                 =========================================================== */}
@@ -5476,6 +5301,7 @@ export default function Receipt() {
                                     =================================================== */}
 
                                     <div
+                                        ref={filePickerDropzoneRef}
                                         onClick={
                                             openFilePicker
                                         }
@@ -5509,7 +5335,7 @@ export default function Receipt() {
                                             text-center
                                             transition
                                             select-none
-
+                                            
                                             ${
                                                 period?.id &&
                                                 !uploading
@@ -6150,6 +5976,7 @@ export default function Receipt() {
 
                                         <div className="grid grid-cols-2 gap-2">
                                             <button
+                                                ref={reconFranchiseButtonRef}
                                                 type="button"
                                                 onClick={() => handleReconTypeChange("FRC")}
                                                 disabled={loading}
@@ -6188,6 +6015,7 @@ export default function Receipt() {
                                             )}
                                         </label>
 
+                                        
                                         <select
                                             value={reconAccount}
                                             onChange={(event) => {
@@ -6198,15 +6026,23 @@ export default function Receipt() {
                                             disabled={loading || loadingAccounts || !period?.id}
                                             className="min-h-11 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-gray-100"
                                         >
-                                            <option value="ALL">
-                                                {reconType === "FRC" ? "Semua Jenis Bank" : "Semua Rekening"}
-                                            </option>
+                                            {reconType === "FRC" ? (
+                                                <option value="ALL">
+                                                    Semua Jenis Bank
+                                                </option>
+                                            ) : (
+                                                <option value="">
+                                                    Pilih Nomor Rekening
+                                                </option>
+                                            )}
 
                                             {Array.isArray(accounts) && accounts.map((account, index) => {
                                                 const isRegular = reconType === "REG";
+
                                                 const noRek = isRegular
                                                     ? String(account?.no_rek ?? "").trim()
                                                     : String(account ?? "").trim();
+
                                                 const jnsBank = isRegular ? account?.jns_bank : "";
                                                 const akun = isRegular ? account?.akun : "";
 
@@ -6217,12 +6053,16 @@ export default function Receipt() {
                                                     : noRek;
 
                                                 return (
-                                                    <option key={`${reconType}-${noRek}-${index}`} value={noRek}>
+                                                    <option
+                                                        key={`${reconType}-${noRek}-${index}`}
+                                                        value={noRek}
+                                                    >
                                                         {label}
                                                     </option>
                                                 );
                                             })}
                                         </select>
+
 
                                         {loadingAccounts && (
                                             <p className="mt-2 flex items-center gap-2 text-xs text-blue-600">
@@ -6884,7 +6724,7 @@ export default function Receipt() {
                                     grid
                                     grid-cols-1
                                     md:grid-cols-2
-                                    xl:grid-cols-4
+                                    xl:grid-cols-5
                                     gap-3
                                 ">
 
@@ -6903,10 +6743,8 @@ export default function Receipt() {
                                         </label>
 
                                         <select
-                                            value={
-                                                historyType
-                                            }
-
+                                            ref={historyTypeSelectRef}
+                                            value={historyType}
                                             onChange={
                                                 event => {
 
@@ -6947,138 +6785,71 @@ export default function Receipt() {
 
                                     </div>
 
-
                                     {/* JENIS BANK */}
 
-                                    <div>
+                                    {historyType === "FRC" && (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-gray-600 mb-1">
+                                                Jenis Bank
+                                            </label>
 
-                                        <label className="
-                                            block
-                                            text-xs
-                                            font-semibold
-                                            text-gray-600
-                                            mb-1
-                                        ">
-                                            Jenis Bank
-                                        </label>
+                                            <select
+                                                value={historyBank}
+                                                onChange={(event) =>
+                                                    setHistoryBank(event.target.value)
+                                                }
+                                                className="w-full px-3 py-2.5 border rounded-lg bg-white text-sm"
+                                            >
+                                                <option value="ALL">Semua Jenis Bank</option>
 
-                                        <select
-                                            value={
-                                                historyBank
-                                            }
-
-                                            onChange={
-                                                event =>
-                                                    setHistoryBank(
-                                                        event.target.value
-                                                    )
-                                            }
-
-                                            className="
-                                                w-full
-                                                px-3
-                                                py-2.5
-                                                border
-                                                rounded-lg
-                                                bg-white
-                                                text-sm
-                                            "
-                                        >
-
-                                            <option value="ALL">
-                                                Semua Jenis Bank
-                                            </option>
-
-                                            {historyBanks.map(
-                                                (
-                                                    bank,
-                                                    index
-                                                ) => (
-
-                                                    <option
-                                                        key={
-                                                            `${bank}-${index}`
-                                                        }
-                                                        value={
-                                                            bank
-                                                        }
-                                                    >
+                                                {historyBanks.map((bank, index) => (
+                                                    <option key={`${bank}-${index}`} value={bank}>
                                                         {bank}
                                                     </option>
-
-                                                )
-                                            )}
-
-                                        </select>
-
-                                    </div>
-
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
 
                                     {/* NO REKENING */}
 
-                                    <div>
+                                    {historyType === "REG" && (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-gray-600 mb-1">
+                                                Nomor Rekening
+                                            </label>
 
-                                        <label className="
-                                            block
-                                            text-xs
-                                            font-semibold
-                                            text-gray-600
-                                            mb-1
-                                        ">
-                                            No. Rekening
-                                        </label>
+                                            <select
+                                                value={historyAccount}
+                                                onChange={(event) =>
+                                                    setHistoryAccount(event.target.value)
+                                                }
+                                                className="w-full px-3 py-2.5 border rounded-lg bg-white text-sm"
+                                            >
+                                                <option value="ALL">Semua Rekening</option>
 
-                                        <select
-                                            value={
-                                                historyAccount
-                                            }
+                                                {historyAccounts.map((account, index) => {
+                                                    const noRek = String(account?.no_rek ?? "").trim();
+                                                    const jnsBank = String(
+                                                        account?.jns_bank ?? ""
+                                                    ).trim();
+                                                    const akun = String(account?.akun ?? "").trim();
 
-                                            onChange={
-                                                event =>
-                                                    setHistoryAccount(
-                                                        event.target.value
-                                                    )
-                                            }
+                                                    if (!noRek) return null;
 
-                                            className="
-                                                w-full
-                                                px-3
-                                                py-2.5
-                                                border
-                                                rounded-lg
-                                                bg-white
-                                                text-sm
-                                            "
-                                        >
-
-                                            <option value="ALL">
-                                                Semua Rekening
-                                            </option>
-
-                                            {historyAccounts.map(
-                                                (
-                                                    account,
-                                                    index
-                                                ) => (
-
-                                                    <option
-                                                        key={
-                                                            `${account}-${index}`
-                                                        }
-                                                        value={
-                                                            account
-                                                        }
-                                                    >
-                                                        {account}
-                                                    </option>
-
-                                                )
-                                            )}
-
-                                        </select>
-
-                                    </div>
-
+                                                    return (
+                                                        <option
+                                                            key={`${noRek}-${index}`}
+                                                            value={noRek}
+                                                        >
+                                                            {jnsBank || "-"} - {noRek}
+                                                            {akun ? ` (${akun})` : ""}
+                                                        </option>
+                                                    );
+                                                })}
+                                            </select>
+                                        </div>
+                                    )}
 
                                     {/* KATEGORI */}
 
@@ -7125,10 +6896,6 @@ export default function Receipt() {
                                                 Match
                                             </option>
 
-                                            <option value="MATCH_SELISIH">
-                                                Match tapi Selisih
-                                            </option>
-
                                             <option value="MUTASI_ONLY">
                                                 Mutasi Only
                                             </option>
@@ -7141,9 +6908,7 @@ export default function Receipt() {
 
                                     </div>
 
-
                                     {/* TANGGAL AWAL */}
-
                                     <div>
 
                                         <label className="
@@ -7181,7 +6946,6 @@ export default function Receipt() {
                                         />
 
                                     </div>
-
 
                                     {/* TANGGAL AKHIR */}
 
@@ -7222,172 +6986,131 @@ export default function Receipt() {
                                         />
 
                                     </div>
-
-
-                                    {/* SEARCH */}
-
+                                    
+                                    {/* SEARCH + ACTION */}
                                     <div className="
                                         md:col-span-2
+                                        xl:col-span-5
                                     ">
-
-                                        <label className="
-                                            block
-                                            text-xs
-                                            font-semibold
-                                            text-gray-600
-                                            mb-1
-                                        ">
-                                            Pencarian
-                                        </label>
-
                                         <div className="
-                                            relative
+                                            flex
+                                            flex-col
+                                            sm:flex-row
+                                            sm:items-end
+                                            gap-3
                                         ">
 
-                                            <FaSearch className="
-                                                absolute
-                                                left-3
-                                                top-1/2
-                                                -translate-y-1/2
-                                                text-gray-400
-                                            " />
+                                            {/* INPUT PENCARIAN */}
+                                            <div className="
+                                                w-full
+                                                sm:max-w-[500px]
+                                                flex-1
+                                            ">
+                                                <label className="
+                                                    block
+                                                    text-xs
+                                                    font-semibold
+                                                    text-gray-600
+                                                    mb-1
+                                                ">
+                                                    Pencarian
+                                                </label>
 
-                                            <input
-                                                type="text"
-                                                value={
-                                                    historySearch
-                                                }
+                                                <div className="relative">
+                                                    <FaSearch className="
+                                                        absolute
+                                                        left-3
+                                                        top-1/2
+                                                        -translate-y-1/2
+                                                        text-gray-400
+                                                    " />
 
-                                                onChange={
-                                                    event =>
-                                                        setHistorySearch(
-                                                            event.target.value
-                                                        )
-                                                }
-
-                                                onKeyDown={
-                                                    event => {
-
-                                                        if (
-                                                            event.key ===
-                                                            "Enter"
-                                                        ) {
-
-                                                            searchReconciliationHistory();
-
+                                                    <input
+                                                        type="text"
+                                                        value={historySearch}
+                                                        onChange={event =>
+                                                            setHistorySearch(event.target.value)
                                                         }
+                                                        onKeyDown={event => {
+                                                            if (event.key === "Enter") {
+                                                                searchReconciliationHistory();
+                                                            }
+                                                        }}
+                                                        placeholder="Cari..."
+                                                        className="
+                                                            w-full
+                                                            pl-9
+                                                            pr-3
+                                                            py-2.5
+                                                            border
+                                                            rounded-lg
+                                                            bg-white
+                                                            text-sm
+                                                        "
+                                                    />
+                                                </div>
+                                            </div>
 
-                                                    }
-                                                }
-
-                                                placeholder="Cari..."
-
+                                            {/* TOMBOL RESET */}
+                                            <button
+                                                type="button"
+                                                onClick={resetHistoryFilter}
                                                 className="
-                                                    w-full
-                                                    pl-9
-                                                    pr-3
+                                                    px-4
                                                     py-2.5
-                                                    border
                                                     rounded-lg
-                                                    bg-white
-                                                    text-sm
+                                                    border
+                                                    text-gray-700
+                                                    hover:bg-gray-50
+                                                    whitespace-nowrap
                                                 "
-                                            />
+                                            >
+                                                Reset
+                                            </button>
+
+                                            {/* TOMBOL CARI */}
+                                            <button
+                                                type="button"
+                                                onClick={searchReconciliationHistory}
+                                                disabled={historyLoading}
+                                                className="
+                                                    px-5
+                                                    py-2.5
+                                                    rounded-lg
+                                                    bg-blue-600
+                                                    hover:bg-blue-700
+                                                    text-white
+                                                    font-semibold
+                                                    inline-flex
+                                                    items-center
+                                                    justify-center
+                                                    gap-2
+                                                    whitespace-nowrap
+                                                    disabled:bg-gray-400
+                                                "
+                                            >
+                                                {historyLoading ? (
+                                                    <>
+                                                        <FaSyncAlt className="animate-spin" />
+                                                        Mencari...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <FaSearch />
+                                                        Cari Riwayat
+                                                    </>
+                                                )}
+                                            </button>
 
                                         </div>
-
                                     </div>
-
                                 </div>
 
-
-                                {/* ACTION */}
-
-                                <div className="
-                                    mt-4
-                                    flex
-                                    flex-col-reverse
-                                    sm:flex-row
-                                    sm:justify-end
-                                    gap-2
-                                ">
-
-                                    <button
-                                        type="button"
-                                        onClick={
-                                            resetHistoryFilter
-                                        }
-
-                                        className="
-                                            px-4
-                                            py-2.5
-                                            rounded-lg
-                                            border
-                                            text-gray-700
-                                            hover:bg-gray-50
-                                        "
-                                    >
-                                        Reset
-                                    </button>
-
-
-                                    <button
-                                        type="button"
-                                        onClick={
-                                            searchReconciliationHistory
-                                        }
-
-                                        disabled={
-                                            historyLoading
-                                        }
-
-                                        className="
-                                            px-5
-                                            py-2.5
-                                            rounded-lg
-                                            bg-blue-600
-                                            hover:bg-blue-700
-                                            text-white
-                                            font-semibold
-                                            inline-flex
-                                            items-center
-                                            justify-center
-                                            gap-2
-                                            disabled:bg-gray-400
-                                        "
-                                    >
-
-                                        {historyLoading ? (
-
-                                            <>
-                                                <FaSyncAlt className="
-                                                    animate-spin
-                                                " />
-
-                                                Mencari...
-
-                                            </>
-
-                                        ) : (
-
-                                            <>
-                                                <FaSearch />
-
-                                                Cari Riwayat
-
-                                            </>
-
-                                        )}
-
-                                    </button>
-
-                                </div>
-
-                            </div>
-
-
+                            </div>  
+                            
                             {/* ==================================================
-                                RESULT
+                                RESULT - RIWAYAT REKONSILIASI
+                                LANGSUNG TAMPIL PER KELOMPOK REFF
                             =================================================== */}
 
                             <div className="
@@ -7398,6 +7121,7 @@ export default function Receipt() {
                                 overflow-hidden
                             ">
 
+                                {/* HEADER */}
                                 <div className="
                                     px-4
                                     py-3
@@ -7411,30 +7135,18 @@ export default function Receipt() {
                                 ">
 
                                     <div>
-
-                                        <h2 className="
-                                            font-semibold
-                                        ">
+                                        <h2 className="font-semibold">
                                             Hasil Riwayat Rekonsiliasi
                                         </h2>
 
-                                        <p className="
-                                            text-xs
-                                            text-gray-500
-                                            mt-1
-                                        ">
-                                            {formatNumber(
-                                                filteredHistoryData.length
-                                            )}
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {formatNumber(filteredHistoryData.length)}
                                             {" "}
-                                            data ditemukan
+                                            kelompok data ditemukan
                                         </p>
-
                                     </div>
 
-
                                     {historyExecuted && (
-
                                         <span className="
                                             px-2.5
                                             py-1
@@ -7449,12 +7161,11 @@ export default function Receipt() {
                                                 : "REGULER"
                                             }
                                         </span>
-
                                     )}
 
                                 </div>
 
-
+                                {/* EMPTY DATA */}
                                 {filteredHistoryData.length === 0 ? (
 
                                     <div className="
@@ -7482,12 +7193,8 @@ export default function Receipt() {
                                             Tidak ada data
                                         </p>
 
-                                        <p className="
-                                            text-xs
-                                            mt-1
-                                        ">
-                                            Silakan gunakan filter lalu klik
-                                            Cari Riwayat.
+                                        <p className="text-xs mt-1">
+                                            Silakan gunakan filter lalu klik Cari Riwayat.
                                         </p>
 
                                     </div>
@@ -7495,26 +7202,40 @@ export default function Receipt() {
                                 ) : (
 
                                     <div className="
-                                        max-h-[calc(100vh-700px)]
+                                        max-h-[calc(100vh-400px)]
                                         overflow-auto
                                     ">
 
                                         <table className="
                                             w-full
-                                            min-w-[1200px]
+                                            min-w-[1800px]
                                             text-sm
                                         ">
 
+                                            {/* TABLE HEADER */}
                                             <thead className="
                                                 bg-gray-50
                                                 border-b
+                                                sticky
+                                                top-0
+                                                z-10
                                             ">
 
                                                 <tr>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
+                                                        text-center
+                                                        text-xs
+                                                        font-semibold
+                                                        text-gray-500
+                                                        w-12
+                                                    ">
+                                                        No
+                                                    </th>
+
+                                                    <th className="
+                                                        px-3 py-3
                                                         text-left
                                                         text-xs
                                                         font-semibold
@@ -7524,8 +7245,7 @@ export default function Receipt() {
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
                                                         text-left
                                                         text-xs
                                                         font-semibold
@@ -7535,8 +7255,7 @@ export default function Receipt() {
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
                                                         text-left
                                                         text-xs
                                                         font-semibold
@@ -7546,8 +7265,7 @@ export default function Receipt() {
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
                                                         text-left
                                                         text-xs
                                                         font-semibold
@@ -7557,41 +7275,59 @@ export default function Receipt() {
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
                                                         text-left
                                                         text-xs
                                                         font-semibold
                                                         text-gray-500
                                                     ">
-                                                        Receipt
+                                                        Reff
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
+                                                        text-left
+                                                        text-xs
+                                                        font-semibold
+                                                        text-blue-700
+                                                        bg-blue-50
+                                                    ">
+                                                        Detail Mutasi
+                                                    </th>
+
+                                                    <th className="
+                                                        px-3 py-3
                                                         text-right
                                                         text-xs
                                                         font-semibold
                                                         text-gray-500
                                                     ">
-                                                        Mutasi
+                                                        Total Mutasi
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
+                                                        text-left
+                                                        text-xs
+                                                        font-semibold
+                                                        text-green-700
+                                                        bg-green-50
+                                                    ">
+                                                        Detail Receipt
+                                                    </th>
+
+                                                    <th className="
+                                                        px-3 py-3
                                                         text-right
                                                         text-xs
                                                         font-semibold
                                                         text-gray-500
                                                     ">
-                                                        Receipt
+                                                        Total Receipt
                                                     </th>
 
                                                     <th className="
-                                                        px-4
-                                                        py-3
+                                                        px-3 py-3
                                                         text-right
                                                         text-xs
                                                         font-semibold
@@ -7600,671 +7336,508 @@ export default function Receipt() {
                                                         Selisih
                                                     </th>
 
-                                                    <th className="
-                                                        px-4
-                                                        py-3
-                                                        text-center
-                                                        text-xs
-                                                        font-semibold
-                                                        text-gray-500
-                                                    ">
-                                                        Detail
-                                                    </th>
-
                                                 </tr>
 
                                             </thead>
 
+                                            {/* TABLE BODY */}
+                                            <tbody className="divide-y">
 
-                                            <tbody className="
-                                                divide-y
-                                            ">
+                                                {filteredHistoryData.map((item, index) => {
 
-                                                {filteredHistoryData.map(
-                                                    (
-                                                        item,
-                                                        index
-                                                    ) => {
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | DATA MUTASI
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                        const expanded =
-                                                            historyExpandedRow ===
-                                                            index;
+                                                    const mutasiRows = Array.isArray(item.mutasi)
+                                                        ? item.mutasi
+                                                        : [];
 
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | DATA RECEIPT
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                        const mutasiAmount =
-                                                            Number(
-                                                                item.mutasi_amount ||
-                                                                0
-                                                            );
+                                                    const receiptRows = Array.isArray(item.receipts)
+                                                        ? item.receipts
+                                                        : [];
 
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | TOTAL
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                        const receiptAmount =
-                                                            Number(
-                                                                item.receipt_amount ||
-                                                                0
-                                                            );
+                                                    const mutasiAmount = Number(
+                                                        item.mutasi_amount || 0
+                                                    );
 
+                                                    const receiptAmount = Number(
+                                                        item.receipt_amount || 0
+                                                    );
 
-                                                        const difference =
-                                                            Number(
-                                                                item.difference ??
-                                                                (
-                                                                    receiptAmount -
-                                                                    mutasiAmount
-                                                                )
-                                                            );
+                                                    const difference = Number(
+                                                        item.difference ??
+                                                        (mutasiAmount - receiptAmount)
+                                                    );
 
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | TANGGAL
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                        return (
+                                                    const tanggal =
+                                                        item.tanggal ||
+                                                        item.mutasi_date ||
+                                                        item.receipt_date;
 
-                                                            <React.Fragment
-                                                                key={
-                                                                    item.reff ||
-                                                                    item.id ||
-                                                                    index
-                                                                }
-                                                            >
+                                                    /*
+                                                    |--------------------------------------------------------------------------
+                                                    | STATUS
+                                                    |--------------------------------------------------------------------------
+                                                    */
 
-                                                                <tr className="
-                                                                    hover:bg-gray-50
+                                                    const isMutasiOnly =
+                                                        item.status === "MUTASI_ONLY";
+
+                                                    const isReceiptOnly =
+                                                        item.status === "RECEIPT_ONLY";
+
+                                                    return (
+
+                                                        <tr
+                                                            key={`${item.reff || item.id}-${index}`}
+                                                            className="
+                                                                hover:bg-gray-50
+                                                                align-top
+                                                            "
+                                                        >
+
+                                                            {/* NOMOR */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                text-center
+                                                                text-gray-500
+                                                            ">
+                                                                {index + 1}
+                                                            </td>
+
+                                                            {/* STATUS */}
+                                                            <td className="px-3 py-3">
+
+                                                                <StatusBadge
+                                                                    status={item.status}
+                                                                />
+
+                                                                <div className="
+                                                                    text-[10px]
+                                                                    text-gray-400
+                                                                    mt-1
+                                                                    whitespace-nowrap
                                                                 ">
+                                                                    {mutasiRows.length} Mutasi
+                                                                    {" / "}
+                                                                    {receiptRows.length} Receipt
+                                                                </div>
 
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
+                                                            </td>
+
+                                                            {/* TANGGAL */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                whitespace-nowrap
+                                                            ">
+                                                                {formatDate(tanggal)}
+                                                            </td>
+
+                                                            {/* JENIS BANK */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                whitespace-nowrap
+                                                            ">
+                                                                {item.jns_bank || "-"}
+                                                            </td>
+
+                                                            {/* NO REKENING */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                whitespace-nowrap
+                                                            ">
+                                                                {item.no_rek || "-"}
+                                                            </td>
+
+                                                            {/* REFF */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                font-medium
+                                                                text-gray-700
+                                                                min-w-[150px]
+                                                            ">
+                                                                {item.reff || (
+
+                                                                    <span className="
+                                                                        text-gray-400
+                                                                        italic
+                                                                        font-normal
                                                                     ">
+                                                                        Unreconciled
+                                                                    </span>
 
-                                                                        <StatusBadge
-                                                                            status={
-                                                                                item.status
-                                                                            }
-                                                                        />
+                                                                )}
+                                                            </td>
 
-                                                                    </td>
+                                                            {/* DETAIL MUTASI */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                bg-blue-50/40
+                                                                min-w-[300px]
+                                                            ">
 
+                                                                {isReceiptOnly ? (
 
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                        whitespace-nowrap
+                                                                    <span className="
+                                                                        text-gray-300
+                                                                        italic
                                                                     ">
-                                                                        {formatDate(
-                                                                            item.mutasi_date ||
-                                                                            item.receipt_date
-                                                                        )}
-                                                                    </td>
+                                                                        -
+                                                                    </span>
 
+                                                                ) : mutasiRows.length > 0 ? (
 
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                    ">
-                                                                        {item.jns_bank ||
-                                                                            "-"
-                                                                        }
-                                                                    </td>
+                                                                    <div className="space-y-2">
 
+                                                                        {mutasiRows.map((mutasi, mutasiIndex) => (
 
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                    ">
-                                                                        {item.no_rek ||
-                                                                            item.remittance_bank_account ||
-                                                                            "-"
-                                                                        }
-                                                                    </td>
-
-
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                    ">
-                                                                        {item.receipt_number ||
-                                                                            "-"
-                                                                        }
-                                                                    </td>
-
-
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                        text-right
-                                                                    ">
-                                                                        {formatCurrency(
-                                                                            mutasiAmount
-                                                                        )}
-                                                                    </td>
-
-
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                        text-right
-                                                                    ">
-                                                                        {formatCurrency(
-                                                                            receiptAmount
-                                                                        )}
-                                                                    </td>
-
-
-                                                                    <td className={`
-                                                                        px-4
-                                                                        py-3
-                                                                        text-right
-                                                                        font-semibold
-
-                                                                        ${
-                                                                            difference === 0
-                                                                                ? "text-green-600"
-                                                                                : "text-red-600"
-                                                                        }
-                                                                    `}>
-                                                                        {formatCurrency(
-                                                                            difference
-                                                                        )}
-                                                                    </td>
-
-
-                                                                    <td className="
-                                                                        px-4
-                                                                        py-3
-                                                                        text-center
-                                                                    ">
-
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() =>
-                                                                                setHistoryExpandedRow(
-                                                                                    expanded
-                                                                                        ? null
-                                                                                        : index
-                                                                                )
-                                                                            }
-
-                                                                            className="
-                                                                                w-8
-                                                                                h-8
-                                                                                rounded-lg
-                                                                                hover:bg-gray-100
-                                                                                inline-flex
-                                                                                items-center
-                                                                                justify-center
-                                                                            "
-                                                                        >
-
-                                                                            {expanded ? (
-                                                                                <FaChevronUp />
-                                                                            ) : (
-                                                                                <FaChevronDown />
-                                                                            )}
-
-                                                                        </button>
-
-                                                                    </td>
-
-                                                                </tr>
-
-
-                                                                {expanded && (
-
-                                                                    <tr>
-
-                                                                        <td
-                                                                            colSpan="9"
-                                                                            className="
-                                                                                bg-gray-50
-                                                                                px-4
-                                                                                py-4
-                                                                            "
-                                                                        >
-
-                                                                            <div className="
-                                                                                grid
-                                                                                grid-cols-1
-                                                                                lg:grid-cols-2
-                                                                                gap-3
-                                                                            ">
-
-                                                                                {/* MUTASI */}
-
-                                                                                <div className="
+                                                                            <div
+                                                                                key={mutasi.id || mutasiIndex}
+                                                                                className="
                                                                                     bg-white
                                                                                     border
-                                                                                    rounded-lg
-                                                                                    p-4
+                                                                                    border-blue-100
+                                                                                    rounded-md
+                                                                                    p-2.5
+                                                                                "
+                                                                            >
+
+                                                                                <div className="
+                                                                                    flex
+                                                                                    justify-between
+                                                                                    items-start
+                                                                                    gap-2
                                                                                 ">
 
-                                                                                    <div className="
-                                                                                        flex
-                                                                                        items-center
-                                                                                        justify-between
+                                                                                    <span className="
+                                                                                        text-[10px]
+                                                                                        text-gray-400
                                                                                     ">
+                                                                                        Mutasi {mutasiIndex + 1}
+                                                                                    </span>
 
-                                                                                        <h3 className="
-                                                                                            font-semibold
-                                                                                            text-sm
-                                                                                        ">
-                                                                                            Data Mutasi
-                                                                                        </h3>
-
-
-                                                                                        {item.mutasi_id && (
-
-                                                                                            <button
-                                                                                                type="button"
-
-                                                                                                onClick={() =>
-                                                                                                    selectManualMutasi(
-                                                                                                        item
-                                                                                                    )
-                                                                                                }
-
-                                                                                                className={`
-                                                                                                    px-3
-                                                                                                    py-1.5
-                                                                                                    rounded-lg
-                                                                                                    text-xs
-                                                                                                    font-semibold
-                                                                                                    border
-
-                                                                                                    ${
-                                                                                                        manualMutasi?.id ===
-                                                                                                        item.mutasi_id
-
-                                                                                                            ? `
-                                                                                                                bg-blue-600
-                                                                                                                text-white
-                                                                                                                border-blue-600
-                                                                                                            `
-
-                                                                                                            : `
-                                                                                                                bg-white
-                                                                                                                text-gray-700
-                                                                                                                hover:bg-gray-50
-                                                                                                            `
-                                                                                                    }
-                                                                                                `}
-                                                                                            >
-
-                                                                                                {manualMutasi?.id ===
-                                                                                                item.mutasi_id
-
-                                                                                                    ? "Dipilih"
-
-                                                                                                    : "Pilih Mutasi"
-                                                                                                }
-
-                                                                                            </button>
-
-                                                                                        )}
-
-                                                                                    </div>
-
-
-                                                                                    <div className="
-                                                                                        mt-3
-                                                                                        space-y-2
-                                                                                        text-sm
+                                                                                    <span className="
+                                                                                        font-semibold
+                                                                                        text-blue-700
+                                                                                        whitespace-nowrap
                                                                                     ">
-
-                                                                                        <div>
-                                                                                            ID:
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    item.mutasi_id ||
-                                                                                                    "-"
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Tanggal:
-                                                                                            {" "}
-                                                                                            {
-                                                                                                formatDate(
-                                                                                                    item.mutasi_date
-                                                                                                )
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Rekening:
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.no_rek ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Bank:
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.jns_bank ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Nominal:
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    formatCurrency(
-                                                                                                        item.mutasi_amount
-                                                                                                    )
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Reff:
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    item.mutation_reff ||
-                                                                                                    item.reff ||
-                                                                                                    "-"
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Keterangan:
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.description ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-
-                                                                                    </div>
+                                                                                        {formatCurrency(mutasi.cr)}
+                                                                                    </span>
 
                                                                                 </div>
 
-
-                                                                                {/* RECEIPT */}
+                                                                                <div className="
+                                                                                    mt-1
+                                                                                    text-xs
+                                                                                    text-gray-700
+                                                                                ">
+                                                                                    {formatDate(mutasi.tgl)}
+                                                                                </div>
 
                                                                                 <div className="
-                                                                                    bg-white
-                                                                                    border
-                                                                                    rounded-lg
-                                                                                    p-4
+                                                                                    mt-1
+                                                                                    text-xs
+                                                                                    text-gray-600
+                                                                                    break-words
                                                                                 ">
-
-                                                                                    <div className="
-                                                                                        flex
-                                                                                        items-center
-                                                                                        justify-between
-                                                                                    ">
-
-                                                                                        <h3 className="
-                                                                                            font-semibold
-                                                                                            text-sm
-                                                                                        ">
-                                                                                            Data Receipt
-                                                                                        </h3>
-
-
-                                                                                        {item.receipt_id && (
-
-                                                                                            <button
-                                                                                                type="button"
-
-                                                                                                onClick={() =>
-                                                                                                    selectManualReceipt(
-                                                                                                        item
-                                                                                                    )
-                                                                                                }
-
-                                                                                                className={`
-                                                                                                    px-3
-                                                                                                    py-1.5
-                                                                                                    rounded-lg
-                                                                                                    text-xs
-                                                                                                    font-semibold
-                                                                                                    border
-
-                                                                                                    ${
-                                                                                                        manualReceipt?.id ===
-                                                                                                        item.receipt_id
-
-                                                                                                            ? `
-                                                                                                                bg-blue-600
-                                                                                                                text-white
-                                                                                                                border-blue-600
-                                                                                                            `
-
-                                                                                                            : `
-                                                                                                                bg-white
-                                                                                                                text-gray-700
-                                                                                                                hover:bg-gray-50
-                                                                                                            `
-                                                                                                    }
-                                                                                                `}
-                                                                                            >
-
-                                                                                                {manualReceipt?.id ===
-                                                                                                item.receipt_id
-
-                                                                                                    ? "Dipilih"
-
-                                                                                                    : "Pilih Receipt"
-                                                                                                }
-
-                                                                                            </button>
-
-                                                                                        )}
-
-                                                                                    </div>
-
-
-                                                                                    <div className="
-                                                                                        mt-3
-                                                                                        space-y-2
-                                                                                        text-sm
-                                                                                    ">
-
-                                                                                        <div>
-                                                                                            Receipt Number :
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    item.receipt_number ||
-                                                                                                    "-"
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Receipt Date :
-                                                                                            {" "}
-                                                                                            {
-                                                                                                formatDate(
-                                                                                                    item.receipt_date
-                                                                                                )
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            No Rekening :
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.no_rek ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Amount :
-                                                                                            {" "}
-                                                                                            <strong>
-                                                                                                {
-                                                                                                    formatCurrency(
-                                                                                                        item.receipt_amount
-                                                                                                    )
-                                                                                                }
-                                                                                            </strong>
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Receipt Status :
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.receipt_status ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-
-                                                                                        <div>
-                                                                                            Receipt State :
-                                                                                            {" "}
-                                                                                            {
-                                                                                                item.receipt_state ||
-                                                                                                "-"
-                                                                                            }
-                                                                                        </div>
-                                                                                        
-                                                                                        <div>
-                                                                                            comments :
-                                                                                            {" "}
-                                                                                            {item.receipts?.[0]?.comments || "-"}
-                                                                                        </div>
-
-                                                                                    </div>
-
+                                                                                    {mutasi.remark || "-"}
                                                                                 </div>
+
+                                                                                {mutasi.remark1 && (
+
+                                                                                    <div className="
+                                                                                        mt-1
+                                                                                        text-xs
+                                                                                        text-gray-500
+                                                                                        break-words
+                                                                                    ">
+                                                                                        {mutasi.remark1}
+                                                                                    </div>
+
+                                                                                )}
 
                                                                             </div>
 
+                                                                        ))}
 
-                                                                            {/* MANUAL ACTION */}
+                                                                    </div>
 
-                                                                            {(manualReceipt ||
-                                                                                manualMutasi) && (
+                                                                ) : (
 
-                                                                                <div className="
-                                                                                    mt-3
+                                                                    <span className="
+                                                                        text-gray-300
+                                                                        italic
+                                                                    ">
+                                                                        -
+                                                                    </span>
+
+                                                                )}
+
+                                                            </td>
+
+                                                            {/* TOTAL MUTASI */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                text-right
+                                                                whitespace-nowrap
+                                                                font-semibold
+                                                                text-blue-700
+                                                            ">
+                                                                {formatCurrency(mutasiAmount)}
+                                                            </td>
+
+                                                            {/* DETAIL RECEIPT */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                bg-green-50/40
+                                                                min-w-[320px]
+                                                            ">
+
+                                                                {isMutasiOnly ? (
+
+                                                                    <span className="
+                                                                        text-gray-300
+                                                                        italic
+                                                                    ">
+                                                                        -
+                                                                    </span>
+
+                                                                ) : receiptRows.length > 0 ? (
+
+                                                                    <div className="space-y-2">
+
+                                                                        {receiptRows.map((receipt, receiptIndex) => (
+
+                                                                            <div
+                                                                                key={receipt.id || receiptIndex}
+                                                                                className="
                                                                                     bg-white
                                                                                     border
-                                                                                    rounded-lg
-                                                                                    p-4
+                                                                                    border-green-100
+                                                                                    rounded-md
+                                                                                    p-2.5
+                                                                                "
+                                                                            >
+
+                                                                                <div className="
+                                                                                    flex
+                                                                                    justify-between
+                                                                                    items-start
+                                                                                    gap-2
                                                                                 ">
 
-                                                                                    <div className="
-                                                                                        flex
-                                                                                        flex-col
-                                                                                        sm:flex-row
-                                                                                        sm:items-center
-                                                                                        sm:justify-between
-                                                                                        gap-3
+                                                                                    <span className="
+                                                                                        font-semibold
+                                                                                        text-green-700
+                                                                                        break-words
                                                                                     ">
+                                                                                        {receipt.receipt_number || "-"}
+                                                                                    </span>
 
-                                                                                        <div>
+                                                                                    <span className="
+                                                                                        font-semibold
+                                                                                        text-green-700
+                                                                                        whitespace-nowrap
+                                                                                    ">
+                                                                                        {formatCurrency(receipt.receipt_amount)}
+                                                                                    </span>
 
-                                                                                            <h3 className="
-                                                                                                font-semibold
-                                                                                                text-sm
-                                                                                            ">
-                                                                                                Rekonsiliasi Manual
-                                                                                            </h3>
+                                                                                </div>
 
-                                                                                            <p className="
-                                                                                                text-xs
-                                                                                                text-gray-500
-                                                                                                mt-1
-                                                                                            ">
+                                                                                <div className="
+                                                                                    mt-1
+                                                                                    text-[10px]
+                                                                                    text-gray-400
+                                                                                ">
+                                                                                    Receipt {receiptIndex + 1}
+                                                                                </div>
 
-                                                                                                {manualReceipt
-                                                                                                    ? "Receipt sudah dipilih."
-                                                                                                    : "Pilih Receipt."
-                                                                                                }
+                                                                                <div className="
+                                                                                    mt-1
+                                                                                    text-xs
+                                                                                    text-gray-700
+                                                                                ">
+                                                                                    {formatDate(receipt.gl_date)}
+                                                                                </div>
 
-                                                                                                {" "}
+                                                                                <div className="
+                                                                                    mt-1
+                                                                                    text-xs
+                                                                                    text-gray-600
+                                                                                    break-words
+                                                                                ">
+                                                                                    {receipt.activity || "-"}
+                                                                                </div>
 
-                                                                                                {manualMutasi
-                                                                                                    ? "Mutasi sudah dipilih."
-                                                                                                    : "Pilih Mutasi."
-                                                                                                }
+                                                                                {receipt.comments && (
 
-                                                                                            </p>
+                                                                                    <div className="
+                                                                                        mt-1
+                                                                                        text-xs
+                                                                                        text-gray-500
+                                                                                        break-words
+                                                                                    ">
+                                                                                        {receipt.comments}
+                                                                                    </div>
 
-                                                                                        </div>
+                                                                                )}
 
+                                                                                <div className="
+                                                                                    mt-1
+                                                                                    text-[10px]
+                                                                                    text-gray-400
+                                                                                ">
+                                                                                    Status : {receipt.receipt_status || "-"}
+                                                                                </div>
 
+                                                                                <div className="
+                                                                                    text-[10px]
+                                                                                    text-gray-400
+                                                                                ">
+                                                                                    Activity : {receipt.activity || item.no_rek || "-"}
+                                                                                </div>
+
+                                                                                {receipt.reff && (
+
+                                                                                    <div className="
+                                                                                        text-[10px]
+                                                                                        text-gray-400
+                                                                                    ">
+                                                                                        Paid By : {receipt.paid_by}
+                                                                                    </div>
+
+                                                                                )}
+
+                                                                                {/* ==================================================
+                                                                                    BUTTON DELETE RECEIPT
+                                                                                    HANYA UNTUK STATUS RECEIPT_ONLY
+                                                                                ================================================== */}
+
+                                                                                {isReceiptOnly && (
+
+                                                                                    <div className="
+                                                                                        mt-3
+                                                                                        pt-2
+                                                                                        border-t
+                                                                                        border-gray-100
+                                                                                        flex
+                                                                                        justify-end
+                                                                                    ">
                                                                                         <button
                                                                                             type="button"
-
-                                                                                            onClick={
-                                                                                                executeManualReconciliation
-                                                                                            }
-
-                                                                                            disabled={
-                                                                                                !manualReceipt ||
-                                                                                                !manualMutasi ||
-                                                                                                manualReconLoading
-                                                                                            }
-
+                                                                                            onClick={() => handleDeleteReceipt(receipt, item)}
+                                                                                            disabled={deletingReceiptId === receipt.id}
                                                                                             className="
-                                                                                                px-4
-                                                                                                py-2.5
-                                                                                                rounded-lg
-                                                                                                bg-blue-600
-                                                                                                hover:bg-blue-700
-                                                                                                text-white
-                                                                                                font-semibold
                                                                                                 inline-flex
                                                                                                 items-center
                                                                                                 justify-center
-                                                                                                gap-2
-                                                                                                disabled:bg-gray-400
+                                                                                                gap-1.5
+                                                                                                px-3
+                                                                                                py-1.5
+                                                                                                rounded-md
+                                                                                                bg-red-50
+                                                                                                text-red-600
+                                                                                                border
+                                                                                                border-red-200
+                                                                                                hover:bg-red-100
+                                                                                                hover:text-red-700
+                                                                                                text-xs
+                                                                                                font-semibold
+                                                                                                transition
+                                                                                                disabled:opacity-50
+                                                                                                disabled:cursor-not-allowed
                                                                                             "
+                                                                                            title="Hapus Receipt"
                                                                                         >
-
-                                                                                            {manualReconLoading ? (
-
-                                                                                                <>
-                                                                                                    <FaSyncAlt className="
-                                                                                                        animate-spin
-                                                                                                    " />
-
-                                                                                                    Memproses...
-
-                                                                                                </>
-
-                                                                                            ) : (
-
-                                                                                                <>
-                                                                                                    <FaLink />
-
-                                                                                                    Rekonsiliasi Manual
-
-                                                                                                </>
-
-                                                                                            )}
-
+                                                                                            <FaTrash />
+                                                                                            {deletingReceiptId === receipt.id ? "Menghapus..." : "Hapus"}
                                                                                         </button>
 
                                                                                     </div>
 
-                                                                                </div>
+                                                                                )}
 
-                                                                            )}
+                                                                            </div>
 
-                                                                        </td>
+                                                                        ))}
 
-                                                                    </tr>
+                                                                    </div>
+
+                                                                ) : (
+
+                                                                    <span className="
+                                                                        text-gray-300
+                                                                        italic
+                                                                    ">
+                                                                        -
+                                                                    </span>
 
                                                                 )}
 
-                                                            </React.Fragment>
+                                                            </td>
 
-                                                        );
+                                                            {/* TOTAL RECEIPT */}
+                                                            <td className="
+                                                                px-3
+                                                                py-3
+                                                                text-right
+                                                                whitespace-nowrap
+                                                                font-semibold
+                                                                text-green-700
+                                                            ">
+                                                                {formatCurrency(receiptAmount)}
+                                                            </td>
 
-                                                    }
-                                                )}
+                                                            {/* SELISIH */}
+                                                            <td className={`
+                                                                px-3
+                                                                py-3
+                                                                text-right
+                                                                whitespace-nowrap
+                                                                font-bold
+                                                                ${
+                                                                    difference === 0
+                                                                        ? "text-green-600"
+                                                                        : "text-red-600"
+                                                                }
+                                                            `}>
+                                                                {formatCurrency(difference)}
+                                                            </td>
+
+                                                        </tr>
+
+                                                    );
+
+                                                })}
 
                                             </tbody>
 
@@ -8289,11 +7862,13 @@ export default function Receipt() {
                             {/* HEADER */}
                             <div className="bg-white rounded-xl border shadow-sm p-5">
                                 <div className="flex items-center gap-3">
-                                    <div className="
-                                        w-11 h-11 rounded-xl
-                                        bg-green-100 text-green-600
-                                        flex items-center justify-center
-                                    ">
+                                    <div
+                                        className="
+                                            w-11 h-11 rounded-xl
+                                            bg-green-100 text-green-600
+                                            flex items-center justify-center
+                                        "
+                                    >
                                         <FaDownload className="text-xl" />
                                     </div>
 
@@ -8303,27 +7878,28 @@ export default function Receipt() {
                                         </h2>
 
                                         <p className="text-sm text-gray-500 mt-0.5">
-                                            Download hasil rekonsiliasi berdasarkan jenis bank.
+                                            Download hasil rekonsiliasi berdasarkan jenis data.
                                         </p>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* DOWNLOAD OPTIONS */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* DOWNLOAD OPTIONS: TIGA KOLOM */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
-                                {/* FRANCHISE */}
-                                <div className="
-                                    bg-white rounded-xl border
-                                    shadow-sm overflow-hidden
-                                ">
+                                {/* ================================================== */}
+                                {/* REKONSILIASI FRANCHISE */}
+                                {/* ================================================== */}
+                                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
                                     <div className="px-5 py-4 border-b bg-purple-50">
                                         <div className="flex items-center gap-3">
-                                            <div className="
-                                                w-10 h-10 rounded-lg
-                                                bg-purple-100 text-purple-600
-                                                flex items-center justify-center
-                                            ">
+                                            <div
+                                                className="
+                                                    w-10 h-10 rounded-lg
+                                                    bg-purple-100 text-purple-600
+                                                    flex items-center justify-center
+                                                "
+                                            >
                                                 <FaExchangeAlt />
                                             </div>
 
@@ -8346,6 +7922,7 @@ export default function Receipt() {
                                         </p>
 
                                         <button
+                                            ref={downloadFranchiseButtonRef}
                                             type="button"
                                             onClick={() =>
                                                 handleDownloadReconciliation("FRC")
@@ -8353,12 +7930,14 @@ export default function Receipt() {
                                             disabled={
                                                 downloadLoading.FRC ||
                                                 downloadLoading.REG ||
+                                                downloadLoading.VIRTUAL ||
                                                 !cabang ||
                                                 !period?.id
                                             }
                                             className="
-                                                w-full inline-flex items-center
-                                                justify-center gap-2 px-4 py-2.5
+                                                w-full min-h-[42px]
+                                                inline-flex items-center
+                                                justify-center gap-2 px-3 py-2.5
                                                 rounded-lg bg-purple-600
                                                 hover:bg-purple-700 text-white
                                                 text-sm font-semibold transition
@@ -8369,30 +7948,31 @@ export default function Receipt() {
                                             {downloadLoading.FRC ? (
                                                 <>
                                                     <FaSyncAlt className="animate-spin" />
-                                                    Menyiapkan File Franchise...
+                                                    Menyiapkan File...
                                                 </>
                                             ) : (
                                                 <>
                                                     <FaFileExcel />
-                                                    Download Franchise
+                                                    Download Rekon Franchise
                                                 </>
                                             )}
                                         </button>
                                     </div>
                                 </div>
 
-                                {/* REGULER */}
-                                <div className="
-                                    bg-white rounded-xl border
-                                    shadow-sm overflow-hidden
-                                ">
+                                {/* ================================================== */}
+                                {/* REKONSILIASI REGULER */}
+                                {/* ================================================== */}
+                                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
                                     <div className="px-5 py-4 border-b bg-blue-50">
                                         <div className="flex items-center gap-3">
-                                            <div className="
-                                                w-10 h-10 rounded-lg
-                                                bg-blue-100 text-blue-600
-                                                flex items-center justify-center
-                                            ">
+                                            <div
+                                                className="
+                                                    w-10 h-10 rounded-lg
+                                                    bg-blue-100 text-blue-600
+                                                    flex items-center justify-center
+                                                "
+                                            >
                                                 <FaExchangeAlt />
                                             </div>
 
@@ -8422,12 +8002,14 @@ export default function Receipt() {
                                             disabled={
                                                 downloadLoading.REG ||
                                                 downloadLoading.FRC ||
+                                                downloadLoading.VIRTUAL ||
                                                 !cabang ||
                                                 !period?.id
                                             }
                                             className="
-                                                w-full inline-flex items-center
-                                                justify-center gap-2 px-4 py-2.5
+                                                w-full min-h-[42px]
+                                                inline-flex items-center
+                                                justify-center gap-2 px-3 py-2.5
                                                 rounded-lg bg-blue-600
                                                 hover:bg-blue-700 text-white
                                                 text-sm font-semibold transition
@@ -8438,12 +8020,84 @@ export default function Receipt() {
                                             {downloadLoading.REG ? (
                                                 <>
                                                     <FaSyncAlt className="animate-spin" />
-                                                    Menyiapkan File Reguler...
+                                                    Menyiapkan File...
                                                 </>
                                             ) : (
                                                 <>
                                                     <FaFileExcel />
-                                                    Download Reguler
+                                                    Download Rekon Reguler
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* ================================================== */}
+                                {/* REKONSILIASI VIRTUAL */}
+                                {/* ================================================== */}
+                                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                                    <div className="px-5 py-4 border-b bg-amber-50">
+                                        <div className="flex items-center gap-3">
+                                            <div
+                                                className="
+                                                    w-10 h-10 rounded-lg
+                                                    bg-amber-100 text-amber-600
+                                                    flex items-center justify-center
+                                                "
+                                            >
+                                                <FaExchangeAlt />
+                                            </div>
+
+                                            <div>
+                                                <h3 className="font-bold text-gray-800">
+                                                    Rekonsiliasi Virtual
+                                                </h3>
+
+                                                <p className="text-xs text-gray-500 mt-0.5">
+                                                    Hasil rekonsiliasi data virtual
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-5">
+                                        <p className="text-sm text-gray-600 mb-4">
+                                            Download hasil rekonsiliasi transaksi virtual
+                                            untuk periode aktif.
+                                        </p>
+
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                handleDownloadReconciliation("VIRTUAL")
+                                            }
+                                            disabled={
+                                                downloadLoading.VIRTUAL ||
+                                                downloadLoading.FRC ||
+                                                downloadLoading.REG ||
+                                                !cabang ||
+                                                !period?.id
+                                            }
+                                            className="
+                                                w-full min-h-[42px]
+                                                inline-flex items-center
+                                                justify-center gap-2 px-3 py-2.5
+                                                rounded-lg bg-amber-600
+                                                hover:bg-amber-700 text-white
+                                                text-sm font-semibold transition
+                                                disabled:bg-gray-400
+                                                disabled:cursor-not-allowed
+                                            "
+                                        >
+                                            {downloadLoading.VIRTUAL ? (
+                                                <>
+                                                    <FaSyncAlt className="animate-spin" />
+                                                    Menyiapkan File...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <FaFileExcel />
+                                                    Download Rekon Virtual
                                                 </>
                                             )}
                                         </button>
@@ -8454,10 +8108,12 @@ export default function Receipt() {
 
                             {/* VALIDASI */}
                             {(!cabang || !period?.id) && (
-                                <div className="
-                                    rounded-lg border border-amber-200
-                                    bg-amber-50 p-3 text-sm text-amber-800
-                                ">
+                                <div
+                                    className="
+                                        rounded-lg border border-amber-200
+                                        bg-amber-50 p-3 text-sm text-amber-800
+                                    "
+                                >
                                     <FaInfoCircle className="inline mr-2" />
                                     Pilih cabang dan pastikan periode aktif tersedia
                                     sebelum mengunduh hasil rekonsiliasi.

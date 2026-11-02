@@ -676,7 +676,8 @@ export default function Rekon_bank() {
     const [drawerLoading, setDrawerLoading] = useState(false);
     const [drawerFilter, setDrawerFilter] = useState("");
     const [drawerSummary, setDrawerSummary] = useState(null);
-
+    const [drawerMode, setDrawerMode] = useState(null);
+    
     const openDetail = async (row, jenis) => {
 
         console.log("========================================");
@@ -1442,6 +1443,186 @@ export default function Rekon_bank() {
     const [startDate, setStartDate] = useState(null);
     const [endDate, setEndDate] = useState(null);
     const [selectedDates, setSelectedDates] = useState([]);
+    const [statusRekon, setStatusRekon] = useState("RECONCILE");
+    const [jenisMutasi, setJenisMutasi] = useState("ALL");
+    const [processingFilter, setProcessingFilter] = useState(false);
+
+    const handleProsesFilter = async () => {
+
+        // =====================================
+        // VALIDASI FILTER
+        // =====================================
+    
+        if (!jenisMutasi || !statusRekon) {
+            Swal.fire({
+                icon: "warning",
+                title: "Filter belum lengkap",
+                text: "Silakan pilih jenis mutasi dan status rekonsiliasi."
+            });
+            return;
+        }
+    
+        if (!selectedRekeningInfo?.no_rek) {
+            Swal.fire({
+                icon: "warning",
+                title: "Rekening tidak ditemukan",
+                text: "Informasi nomor rekening belum tersedia."
+            });
+            return;
+        }
+    
+        // =====================================
+        // FORMAT TANGGAL
+        // =====================================
+    
+        const formatYmd = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, "0");
+            const day = String(date.getDate()).padStart(2, "0");
+    
+            return `${year}-${month}-${day}`;
+        };
+    
+        let tanggal = {};
+    
+        if (dateMode === "RANGE") {
+    
+            if (!startDate || !endDate) {
+                Swal.fire({
+                    icon: "warning",
+                    title: "Tanggal belum lengkap",
+                    text: "Silakan tentukan tanggal awal dan akhir."
+                });
+                return;
+            }
+    
+            if (startDate > endDate) {
+                Swal.fire({
+                    icon: "warning",
+                    title: "Tanggal tidak valid",
+                    text: "Tanggal awal tidak boleh melebihi tanggal akhir."
+                });
+                return;
+            }
+    
+            tanggal = {
+                mode: "RANGE",
+                mulai: formatYmd(startDate),
+                akhir: formatYmd(endDate)
+            };
+    
+        } else {
+    
+            if (!selectedDates || selectedDates.length === 0) {
+                Swal.fire({
+                    icon: "warning",
+                    title: "Tanggal belum dipilih",
+                    text: "Silakan pilih minimal satu tanggal."
+                });
+                return;
+            }
+    
+            tanggal = {
+                mode: "MULTI",
+                tanggal: selectedDates.map(date =>
+                    date.format("YYYY-MM-DD")
+                )
+            };
+    
+        }
+    
+        // =====================================
+        // PAYLOAD
+        // =====================================
+    
+        const payload = {
+
+            cabang: cabang,
+        
+            jenismutasi: jenisMutasi,
+        
+            tgl: tanggal,
+        
+            no_rek: selectedRekeningInfo.no_rek,
+        
+            status_rekon: statusRekon,
+        
+            jenis_bank: jenisBank,
+        
+            type_bank: typeBank,
+        
+        };
+    
+        console.log("PAYLOAD PROSES FILTER:", payload);
+    
+        try {
+    
+            setProcessingFilter(true);
+    
+            Swal.fire({
+                title: "Memproses Data",
+                text: "Mohon tunggu, sedang memperbarui data mutasi...",
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+                didOpen: () => Swal.showLoading()
+            });
+    
+            // =====================================
+            // REQUEST BACKEND
+            // =====================================
+    
+            const response = await fetch(
+                "/api/rekon/proses-filter",
+                {
+                    method: "POST",
+    
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+    
+                    body: JSON.stringify(payload)
+                }
+            );
+    
+            const result = await response.json();
+    
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message || "Gagal memproses data."
+                );
+            }
+    
+            // =====================================
+            // HASIL
+            // =====================================
+    
+            Swal.fire({
+                icon: "success",
+                title: "Berhasil",
+                text: result.message || "Data berhasil diperbarui.",
+                confirmButtonText: "OK"
+            });
+    
+            console.log("HASIL PROSES:", result);
+    
+        } catch (error) {
+    
+            console.error("PROSES FILTER ERROR:", error);
+    
+            Swal.fire({
+                icon: "error",
+                title: "Gagal",
+                text: error.message || "Terjadi kesalahan."
+            });
+    
+        } finally {
+    
+            setProcessingFilter(false);
+    
+        }
+    
+    };
 
     return (
         <main className="flex-1 px-4 py-2 z-10 text-white">
@@ -1700,12 +1881,47 @@ export default function Rekon_bank() {
                                     />
                                 )}
 
+                                {/* FILTER JENIS MUTASI */}
+                                <select
+                                    value={jenisMutasi}
+                                    onChange={(e) => setJenisMutasi(e.target.value)}
+                                    className="border border-gray-300 rounded px-3 py-2 bg-white min-w-[120px]"
+                                >
+                                    <option value="ALL">All</option>
+                                    <option value="DB">Debet</option>
+                                    <option value="CR">Kredit</option>
+                                </select>
+
+                                {/* FILTER STATUS REKONSILIASI */}
+                                <select
+                                    value={statusRekon}
+                                    onChange={(e) => setStatusRekon(e.target.value)}
+                                    className="border border-gray-300 rounded px-3 py-2 bg-white min-w-[150px]"
+                                >
+                                    <option value="RECONCILE">
+                                        Reconcile
+                                    </option>
+
+                                    <option value="UNRECONCILE">
+                                        Unreconcile
+                                    </option>
+                                </select>
+
                                 {/* Tombol proses */}
                                 <button
-                                    className="bg-yellow-400 hover:bg-yellow-500 px-6 py-2 rounded flex items-center gap-2 text-white font-medium"
+                                    onClick={handleProsesFilter}
+                                    disabled={processingFilter}
+                                    className={`
+                                        px-6 py-2 rounded flex items-center gap-2 text-white font-medium
+                                        ${
+                                            processingFilter
+                                                ? "bg-gray-400 cursor-not-allowed"
+                                                : "bg-yellow-400 hover:bg-yellow-500"
+                                        }
+                                    `}
                                 >
                                     <FaFileImport />
-                                    Proses
+                                    {processingFilter ? "Memproses..." : "Proses"}
                                 </button>
 
                             </div>
