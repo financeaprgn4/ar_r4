@@ -9,7 +9,7 @@ class Users extends Model
     protected $table = 'users';
 
     protected $fillable = [
-        'nama', 'username', 'pass', 'level_user', 'ip', 'foto', 'cabang', 'password'
+        'nama', 'username', 'pass', 'level_user', 'ip', 'foto', 'cabang', 'password', 'role'
     ];
 
     public $timestamps = false;

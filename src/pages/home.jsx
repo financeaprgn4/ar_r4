@@ -95,16 +95,16 @@ const Home = () => {
       <section className="flex items-center justify-center h-[80vh] px-4">
         <div className="bg-white p-10 rounded-xl shadow-lg max-w-xl text-center">
           <h1 className="text-4xl font-bold text-blue-600 mb-4">
-            Selamat Datang di Sistem Administrasi Kantor
+            Selamat Datang di Sistem Administrasi AR Region 4 Klaten
           </h1>
           <p className="text-gray-600 mb-6">
-            Kelola data kantor Anda dengan lebih efisien dan terorganisir melalui platform ini.
+            Kelola administrasi financial secara efektif dan efisien.
           </p>
           <Link
             to="/login"
             className="inline-block bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition"
           >
-            Masuk Sekarang
+            Login Now
           </Link>
         </div>
       </section>

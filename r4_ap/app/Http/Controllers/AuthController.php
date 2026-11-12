@@ -14,38 +14,27 @@ class AuthController extends Controller
         $start = microtime(true);
 
         try {
-
-            $t1 = microtime(true);
-
+            // 1. Validasi
             $request->validate([
                 'username' => 'required|string',
                 'password' => 'required|string'
             ]);
 
-            $t2 = microtime(true);
-
+            // 2. Query user
             $user = DB::table('users')
                 ->where('username', $request->username)
                 ->first();
 
-            if (!$user) {
+            // 3. Verifikasi password
+            // Tetap lakukan pemeriksaan hash yang aman
+            $valid = $user
+                ? Hash::check($request->password, $user->pass)
+                : false;
+
+            if (!$user || !$valid) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'User tidak ditemukan'
-                ], 404);
-            }
-
-            $t3 = microtime(true);
-
-            $valid = Hash::check(
-                $request->password,
-                $user->pass
-            );
-
-            if (!$valid) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Password salah'
+                    'message' => 'Username atau password salah'
                 ], 401);
             }
 
@@ -56,18 +45,25 @@ class AuthController extends Controller
                     'id' => $user->id,
                     'nama' => $user->nama,
                     'username' => $user->username,
+                    'role' => strtoupper(trim($user->role)),
                     'level_user' => $user->level_user,
                     'cabang' => $user->cabang,
                     'ip' => $user->ip
                 ]
             ]);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+
         } catch (\Throwable $e) {
+
+            Log::error('LOGIN ERROR', [
+                'message' => $e->getMessage()
+            ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Server error',
-                'error' => $e->getMessage()
+                'message' => 'Server error'
             ], 500);
         }
     }

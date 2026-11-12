@@ -624,6 +624,7 @@ export default function Receipt() {
             mutasi: {
                 no_rek: [
                     "no rek",
+                    "no. rek",
                     "no rekening",
                     "no_rek",
                     "nomor rekening",
@@ -653,6 +654,7 @@ export default function Receipt() {
                     "remittance_bank_account",
                     "remittance bank account",
                     "no rek",
+                    "no. rek",
                     "no_rek",
                     "no rekening",
                 ],
@@ -681,11 +683,16 @@ export default function Receipt() {
             unreconcile: {
                 no_rek: [
                     "no rek",
+                    "no. rek",
                     "no rekening",
                     "no_rek",
                     "nomor rekening",
                 ],
-                tgl: ["tgl", "tanggal"],
+                tgl: ["tgl",
+                    "tanggal",
+                    "Receipt Date",
+                    "Receipt_Date",
+                ],
                 reff: [
                     "reff",
                     "ref",
@@ -737,7 +744,6 @@ export default function Receipt() {
             "tgl",
             "remark",
             "cr",
-            "dept",
         ];
 
         const receiptRequired = [
@@ -850,22 +856,32 @@ export default function Receipt() {
                     tgl: getValue("tgl"),
                     remark: getValue("remark"),
                     cr: getValue("cr"),
-                    dept: getValue("dept"),
-                    site: getValue("site"),
                 };
+
+                // DEPT hanya dikirim jika memiliki nilai.
+                if (columnIndex.dept !== undefined) {
+                    const dept = getValue("dept");
+
+                    if (dept !== "") {
+                        record.dept = dept;
+                    }
+                }
+
+                // SITE hanya dikirim jika memiliki nilai.
+                if (columnIndex.site !== undefined) {
+                    const site = getValue("site");
+
+                    if (site !== "") {
+                        record.site = site;
+                    }
+                }
 
                 // REMARK1 opsional.
                 if (columnIndex.remark1 !== undefined) {
                     record.remark1 = getValue("remark1");
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | REFF MUTASI OPSIONAL
-                |--------------------------------------------------------------------------
-                | Kirim reff hanya jika kolom tersedia dan nilainya tidak kosong.
-                */
-
+                // REFF hanya dikirim jika tersedia dan tidak kosong.
                 if (columnIndex.reff !== undefined) {
                     const reff = getValue("reff");
 
@@ -1289,23 +1305,6 @@ export default function Receipt() {
             );
 
         }, []);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RESET RESULT FILTER
-    |--------------------------------------------------------------------------
-    */
-
-    const resetResultFilter = () => {
-
-        setResultFilter("ALL");
-
-        setSearch("");
-
-        setExpandedRow(null);
-
-    };
 
 
     /*
@@ -1807,8 +1806,6 @@ export default function Receipt() {
             loading,
         ]
     );
-
-
 
     /*
     |--------------------------------------------------------------------------
@@ -2672,337 +2669,6 @@ export default function Receipt() {
         }
     
     };
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | FILTERED DATA
-    |--------------------------------------------------------------------------
-    */
-
-    const filteredData =
-        useMemo(() => {
-
-            const keyword =
-                search
-                    .trim()
-                    .toLowerCase();
-
-
-            return data.filter(
-                item => {
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | RESULT CATEGORY
-                    |--------------------------------------------------------------------------
-                    */
-
-                    const category =
-                        getResultCategory(
-                            item
-                        );
-
-
-                    if (
-                        resultFilter !==
-                        "ALL" &&
-                        category !==
-                        resultFilter
-                    ) {
-
-                        return false;
-
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | SEARCH
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if (
-                        !keyword
-                    ) {
-
-                        return true;
-
-                    }
-
-
-                    const searchable = [
-
-                        item.mutation_number,
-
-                        item.receipt_number,
-
-                        item.remittance_bank_account,
-
-                        item.no_rek,
-
-                        item.jns_bank,
-
-                        item.description,
-
-                        item.comments,
-                        ...(item.receipts || []).map(receipt => receipt.comments),
-
-                        item.receipt_status,
-
-                        item.receipt_state,
-
-                        item.reff
-
-                    ]
-                        .filter(Boolean)
-                        .join(" ")
-                        .toLowerCase();
-
-
-                    return searchable.includes(
-                        keyword
-                    );
-
-                }
-            );
-
-        }, [
-            data,
-            resultFilter,
-            search
-        ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | EXPORT EXCEL
-    |--------------------------------------------------------------------------
-    */
-
-    const handleExport =
-        async () => {
-
-            if (!cabang) {
-
-                await Swal.fire({
-
-                    icon: "warning",
-
-                    title:
-                        "Cabang Belum Tersedia",
-
-                    text:
-                        "Cabang belum tersedia."
-
-                });
-
-                return;
-
-            }
-
-
-            if (!period?.id) {
-
-                await Swal.fire({
-
-                    icon: "warning",
-
-                    title:
-                        "Periode Belum Tersedia",
-
-                    text:
-                        "Periode aktif belum tersedia."
-
-                });
-
-                return;
-
-            }
-
-
-            if (
-                !reconciliationExecuted
-            ) {
-
-                await Swal.fire({
-
-                    icon: "info",
-
-                    title:
-                        "Rekonsiliasi Belum Dijalankan",
-
-                    text:
-                        "Jalankan rekonsiliasi terlebih dahulu."
-
-                });
-
-                return;
-
-            }
-
-
-            if (!data.length) {
-
-                await Swal.fire({
-
-                    icon: "info",
-
-                    title:
-                        "Tidak Ada Data",
-
-                    text:
-                        "Tidak ada data rekonsiliasi yang dapat diekspor."
-
-                });
-
-                return;
-
-            }
-
-
-            setExporting(
-                true
-            );
-
-
-            try {
-
-                const response =
-                    await axios.get(
-                        "/api/rekon/receipt/export",
-                        {
-
-                            params: {
-
-                                cabang,
-
-                                period_id:
-                                    period.id,
-
-                                type:
-                                    reconType,
-
-                                account:
-                                    reconAccount !==
-                                    "ALL"
-                                        ? reconAccount
-                                        : "",
-
-                                result:
-                                    resultFilter !==
-                                    "ALL"
-                                        ? resultFilter
-                                        : "",
-
-                                search:
-                                    search || ""
-
-                            },
-
-                            responseType:
-                                "blob"
-
-                        }
-                    );
-
-
-                const blob =
-                    new Blob(
-                        [
-                            response.data
-                        ],
-                        {
-
-                            type:
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-                        }
-                    );
-
-
-                const url =
-                    window.URL.createObjectURL(
-                        blob
-                    );
-
-
-                const link =
-                    document.createElement(
-                        "a"
-                    );
-
-
-                link.href =
-                    url;
-
-
-                const typeName =
-                    reconType === "FRC"
-                        ? "Franchise"
-                        : "Reguler";
-
-
-                const accountName =
-                    reconAccount === "ALL"
-                        ? "ALL"
-                        : reconAccount;
-
-
-                link.download =
-                    `Rekonsiliasi_${typeName}_${accountName}_${cabang}_${period?.periode || "Periode"}.xlsx`;
-
-
-                document.body.appendChild(
-                    link
-                );
-
-
-                link.click();
-
-
-                document.body.removeChild(
-                    link
-                );
-
-
-                window.URL.revokeObjectURL(
-                    url
-                );
-
-
-            } catch (error) {
-
-                console.error(
-                    "Export error:",
-                    error
-                );
-
-
-                await Swal.fire({
-
-                    icon: "error",
-
-                    title:
-                        "Export Gagal",
-
-                    text:
-                        getErrorMessage(
-                            error,
-                            "File Excel gagal dibuat."
-                        )
-
-                });
-
-            } finally {
-
-                setExporting(
-                    false
-                );
-
-            }
-
-        };
-    
 
     /*
     |--------------------------------------------------------------------------

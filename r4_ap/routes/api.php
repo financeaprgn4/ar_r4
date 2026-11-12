@@ -29,6 +29,10 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::post('/logout', [AuthController::class, 'logout']);
 Route::get('/cabang', [AuthController::class, 'cabang']);
 Route::get('/lpd-summary', [DashboardController::class, 'summary']);
+Route::get('/dashboard', [DashboardController::class,'index']);
+Route::get('/absen-mutasi-reg', [DashboardController::class, 'absenMutasireg']);
+Route::get('/rekap-mutasi-frc', [DashboardController::class, 'rekapRekonFrc']);
+
 Route::get('/lpd', [LpdController::class, 'lpdAll']);
 Route::get('/lpd-modal', [LpdController::class, 'lpdModal']);
 Route::get('/lpd-rab', [LpdController::class, 'lpdRab']);
@@ -67,9 +71,10 @@ Route::post('/mutasi/reconcile', [StatementController::class, 'reconcileSelected
 Route::post('/mutasi/unreconcile', [StatementController::class, 'unreconcileSelected']);
 Route::post('/mutasi/journal', [StatementController::class, 'journalSelected']);
 Route::post('/import-receipt', [StatementController::class, 'importReceipt']);
-
 Route::post('/upload-rk', [StatementController::class, 'uploadRK']);
 Route::delete('/bank-statement/{id}', [StatementController::class, 'deleteRK']);
+Route::get('/mutasi/export', [StatementController::class, 'exportMutasi']);
+
 Route::post('/Users-add', [UsersController::class, 'usersAdd']);
 Route::get('/lpd-detail', [LpdDetailController::class, 'detail']);
 Route::post('/update-lpd-trx', [LpdUpdateId::class, 'update_id']);

@@ -29,6 +29,7 @@ export default function Mutasi_harian() {
   const [globalFilter, setGlobalFilter] = useState("");
   const [selectedPeriode, setSelectedPeriode] = useState("");
   const [selectedKategori, setSelectedKategori] = useState("Reguler");
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [tableKey, setTableKey] = useState(0);
   
   const [activeDrawer, setActiveDrawer] = useState(null);
@@ -98,6 +99,12 @@ export default function Mutasi_harian() {
     fetchData();
   }, [cabang, selectedPeriode, selectedKategori]);
 
+  // Deteksi periode aktif
+  const activePeriode = periodeList.find(
+    (p) => p.status === "Aktif"
+  );
+
+  const isActivePeriode = selectedPeriode === activePeriode?.periode;
   // =======================
   // TABLE COLUMNS
   // =======================
@@ -153,12 +160,15 @@ export default function Mutasi_harian() {
             </button>
           )}
 
-          <button
-            onClick={() => handleDeleteAction(row.original)}
-            className="px-2 py-1 bg-red-500 hover:bg-red-700 text-white rounded flex items-center"
-          >
-            <FaTrash className="w-5 h-5" />
-          </button>
+          {isActivePeriode && (
+            <button
+              onClick={() => handleDeleteAction(row.original)}
+              className="px-2 py-1 bg-red-500 hover:bg-red-700 text-white rounded flex items-center"
+              title="Hapus Mutasi"
+            >
+              <FaTrash className="w-5 h-5" />
+            </button>
+          )}
         </div>
       ),
     },
@@ -521,6 +531,111 @@ export default function Mutasi_harian() {
     }
   }, [openTopDrawer]);
 
+  const handleExportMutasi = async (kategori) => {
+    if (!isActivePeriode) {
+      Swal.fire(
+        "Tidak Diizinkan",
+        "Export hanya dapat dilakukan pada periode aktif.",
+        "warning"
+      );
+      return;
+    }
+
+    setShowExportMenu(false);
+
+    try {
+      Swal.fire({
+        title: `Export Mutasi ${kategori}`,
+        html: "Sedang menyiapkan file Excel...",
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => Swal.showLoading(),
+      });
+
+      const response = await axios.get("/api/mutasi/export", {
+        params: {
+          cabang: cabang,
+          periode: selectedPeriode,
+          kategori: kategori,
+        },
+        responseType: "blob",
+      });
+
+      // Buat file Excel
+      const blob = new Blob([response.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = `Mutasi_${kategori}_${cabang}_${selectedPeriode}.xlsx`;
+
+      document.body.appendChild(link);
+      link.click();
+
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      Swal.close();
+
+      Swal.fire({
+        icon: "success",
+        title: "Export Berhasil",
+        text: `Data mutasi ${kategori} periode ${selectedPeriode} berhasil diexport.`,
+        timer: 2000,
+        showConfirmButton: false,
+      });
+
+    
+    } catch (err) {
+      console.error("EXPORT MUTASI ERROR:", err);
+
+      let message = "Terjadi kesalahan saat mengexport data mutasi.";
+
+      if (err.response) {
+        const responseData = err.response.data;
+
+        if (responseData instanceof Blob) {
+          try {
+            const text = await responseData.text();
+            const json = JSON.parse(text);
+
+            message =
+              json.message ||
+              json.error ||
+              JSON.stringify(json);
+
+          } catch (parseError) {
+            message = await responseData.text();
+          }
+        } else if (typeof responseData === "object") {
+          message =
+            responseData.message ||
+            responseData.error ||
+            JSON.stringify(responseData);
+        }
+
+        console.error("HTTP STATUS:", err.response.status);
+        console.error("SERVER RESPONSE:", message);
+
+      } else {
+        message = err.message || message;
+      }
+
+      Swal.fire({
+        icon: "error",
+        title: "Export Gagal",
+        html: `<div style="text-align:left; font-size:13px; word-break:break-word;">
+          <b>Pesan error:</b><br/>
+          ${message.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+        </div>`,
+        width: 650,
+      });
+    }
+  };
+
   return (
     <main className="flex-1 px-4 py-2 z-10 text-white">
       <div className="h-[calc(100vh-50px)] bg-white/60 rounded-lg p-4 shadow-lg text-gray-800 w-full">
@@ -750,38 +865,89 @@ export default function Mutasi_harian() {
           categoryFilter={selectedKategori}
           setCategoryFilter={setSelectedKategori}
           onSelectionChange={setSelectedRows} 
+          
           leftElement={
             <div className="flex gap-2">
+
+              {/* IMPORT MUTASI */}
               <button
                 onClick={toggleImportMutasi}
                 className="flex items-center gap-2 bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded"
                 title="Upload Bank Statement"
-                >
-                <FaFileImport className="w-5 h-5" /> Import Mutasi
+              >
+                <FaFileImport className="w-5 h-5" />
+                Import Mutasi
               </button>
 
+              {/* IMPORT GL */}
               <button
                 onClick={() => setDrawerOpen(true)}
                 className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded"
                 title="Upload Bank Statement"
-                >
-                <FaSitemap className="w-5 h-5" /> Import GL
+              >
+                <FaSitemap className="w-5 h-5" />
+                Import GL
               </button>
 
-              <button
-                onClick={() => handleDeleteAction(selectedRows)}
-                disabled={selectedRows.length === 0}
-                className={`flex items-center gap-2 px-3 py-1 rounded text-white
-                  ${selectedRows.length > 0
-                    ? "bg-red-500 hover:bg-red-600 cursor-pointer"
-                    : "bg-gray-400 cursor-not-allowed"
-                  }`}
-                title="Hapus Mutasi"
-              >
-                <FaTrash className="w-5 h-5" /> Delete
-              </button>
+              {/* DELETE */}
+              {isActivePeriode && (
+                <button
+                  onClick={() => handleDeleteAction(selectedRows)}
+                  disabled={selectedRows.length === 0}
+                  className={`flex items-center gap-2 px-3 py-1 rounded text-white
+                    ${selectedRows.length > 0
+                      ? "bg-red-500 hover:bg-red-600 cursor-pointer"
+                      : "bg-gray-400 cursor-not-allowed"
+                    }`}
+                  title="Hapus Mutasi"
+                >
+                  <FaTrash className="w-5 h-5" />
+                  Delete
+                </button>
+              )}
+
+              {/* EXPORT DROPDOWN */}
+              {isActivePeriode && (
+                <div className="relative">
+
+                  <button
+                    type="button"
+                    onClick={() => setShowExportMenu(prev => !prev)}
+                    className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded shadow"
+                  >
+                    <FaDownload className="w-5 h-5" />
+                    Export
+                    <span className="text-xs">▼</span>
+                  </button>
+
+                  {showExportMenu && (
+                    <div className="absolute top-full left-0 mt-1 w-40 bg-white border border-gray-200 rounded-md shadow-lg z-50">
+
+                      <button
+                        type="button"
+                        onClick={() => handleExportMutasi("Reguler")}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-100 rounded-t-md"
+                      >
+                        Reguler
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleExportMutasi("Franchise")}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-100 rounded-b-md"
+                      >
+                        Franchise
+                      </button>
+
+                    </div>
+                  )}
+
+                </div>
+              )}
+
             </div>
           }
+
           rightElement={null}
         />
       </div>

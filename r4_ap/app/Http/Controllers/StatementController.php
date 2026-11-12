@@ -10,6 +10,14 @@ use App\Models\Statement;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\Font;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+
 class StatementController extends Controller
 {
     public function getPeriode(Request $request)
@@ -48,10 +56,10 @@ class StatementController extends Controller
     public function getMutasi(Request $request)
     {
         $cabang   = $request->cabang;
-        $periode  = $request->periode; // contoh format: 2024-05
-        $kategori = $request->kategori ?? 'Reguler'; // default Reguler jika tidak dikirim
+        $periode  = $request->periode;
+        $kategori = $request->kategori ?? 'Reguler';
 
-        // Ambil periode dari tabel periode
+        // Ambil periode berdasarkan cabang dan periode aktif
         $periodeData = DB::table('periode')
             ->where('cabang', $cabang)
             ->where('kategori', 'Mutasi')
@@ -70,11 +78,16 @@ class StatementController extends Controller
         $end   = $periodeData->end_date;
 
         // Pilih tabel berdasarkan kategori
-        $table = $kategori === 'Franchise' ? 'mutasi_frc' : 'mutasi';
+        $table = $kategori === 'Franchise'
+            ? 'mutasi_frc'
+            : 'mutasi';
 
+        // Ambil mutasi yang rentang tanggalnya
+        // bersinggungan dengan periode aktif
         $data = DB::table($table)
             ->where('cabang', $cabang)
-            ->whereBetween('tgl_awal', [$start, $end])
+            ->where('tgl_awal', '<=', $end)
+            ->where('tgl_akhir', '>=', $start)
             ->orderBy('tgl_awal', 'desc')
             ->get();
 
@@ -5397,4 +5410,708 @@ class StatementController extends Controller
             ], 500);
         }
     }
+        
+    public function exportMutasi(Request $request)
+    {
+        // ==========================================
+        // 1. VALIDASI PARAMETER
+        // ==========================================
+        $request->validate([
+            'cabang'   => 'required|string',
+            'periode'  => 'required|string',
+            'kategori' => 'required|in:Reguler,Franchise',
+        ]);
+
+        $cabang   = $request->cabang;
+        $periode  = $request->periode;
+        $kategori = $request->kategori;
+
+        // ==========================================
+        // 2. AMBIL PERIODE AKTIF
+        // ==========================================
+        $periodeData = DB::table('periode')
+            ->where('cabang', $cabang)
+            ->where('kategori', 'Mutasi')
+            ->where('periode', $periode)
+            ->where('status', 'Aktif')
+            ->select(
+                'id',
+                'cabang',
+                'kategori',
+                'periode',
+                'start_date',
+                'end_date',
+                'status'
+            )
+            ->first();
+
+        if (!$periodeData) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Periode tidak ditemukan atau bukan periode aktif.'
+            ], 403);
+        }
+
+        $start = $periodeData->start_date;
+        $end   = $periodeData->end_date;
+
+        // ==========================================
+        // 3. TENTUKAN TABEL DETAIL
+        // ==========================================
+        $detailTable = $kategori === 'Reguler'
+            ? 'mutasi_detail'
+            : 'mutasi_detail_frc';
+
+        $dateColumn = 'tgl';
+
+        // ==========================================
+        // 4. AMBIL GROUP DARI TABEL BANK
+        // ==========================================
+        $bankQuery = DB::table('bank')
+            ->where('cabang', $cabang);
+
+        if ($kategori === 'Reguler') {
+
+            // REGULER:
+            // Satu no_rek = satu sheet
+            $groups = $bankQuery
+                ->where('site', 'REG')
+                ->whereNotNull('no_rek')
+                ->where('no_rek', '<>', '')
+                ->distinct()
+                ->orderBy('no_rek')
+                ->pluck('no_rek')
+                ->values()
+                ->all();
+
+        } else {
+
+            // FRANCHISE:
+            // Satu jns_bank = satu sheet
+            // Site selain REG
+            $groups = $bankQuery
+                ->where('site', '<>', 'REG')
+                ->whereNotNull('jns_bank')
+                ->where('jns_bank', '<>', '')
+                ->distinct()
+                ->orderBy('jns_bank')
+                ->pluck('jns_bank')
+                ->values()
+                ->all();
+        }
+
+        if (empty($groups)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Data rekening atau jenis bank tidak ditemukan.',
+                'kategori' => $kategori,
+                'cabang' => $cabang,
+            ], 404);
+        }
+
+        // ==========================================
+        // 5. INISIALISASI WORKBOOK
+        // ==========================================
+        $spreadsheet = new Spreadsheet();
+
+        $usedSheetNames = [];
+        $sheetCreated = false;
+
+        // ==========================================
+        // 6. FUNGSI MEMBUAT NAMA SHEET
+        // ==========================================
+        $makeSheetName = function ($name) use (&$usedSheetNames) {
+
+            $name = preg_replace(
+                '/[\\\\\/\?\*\:\[\]]/',
+                '-',
+                (string) $name
+            );
+
+            $name = trim($name, "' ");
+
+            if ($name === '') {
+                $name = 'Sheet';
+            }
+
+            $base = mb_substr($name, 0, 31);
+            $sheetName = $base;
+            $counter = 1;
+
+            while (in_array(
+                mb_strtolower($sheetName),
+                $usedSheetNames,
+                true
+            )) {
+                $suffix = '_' . $counter++;
+
+                $sheetName = mb_substr(
+                    $base,
+                    0,
+                    31 - mb_strlen($suffix)
+                ) . $suffix;
+            }
+
+            $usedSheetNames[] = mb_strtolower($sheetName);
+
+            return $sheetName;
+        };
+
+        // ==========================================
+        // 7. FUNGSI WARNA TAB BERDASARKAN BANK
+        // ==========================================
+        $getBankTabColor = function ($bankName) {
+
+            $bankKey = strtoupper(trim((string) $bankName));
+
+            // Warna khusus bank
+            $bankColors = [
+                'BCA'           => '0070C0',
+                'BRI'           => '008000',
+                'MANDIRI'       => 'FFC000',
+                'BNI'           => 'F79646',
+                'BSI'           => '7030A0',
+                'CIMB NIAGA'    => 'C00000',
+                'CIMB'          => 'C00000',
+                'INA PERDANA'   => '00B0F0',
+                'BTN'           => '00B050',
+                'MDR'           => 'FFC000',
+                'TITIPAN'       => '808080',
+            ];
+
+            if (isset($bankColors[$bankKey])) {
+                return $bankColors[$bankKey];
+            }
+
+            // Warna alternatif untuk bank lainnya
+            $palette = [
+                '4472C4',
+                '70AD47',
+                'ED7D31',
+                'A5A5A5',
+                '5B9BD5',
+                '8064A2',
+                'C55A11',
+                '548235',
+                'BF9000',
+                '31869B',
+                '7030A0',
+                'C00000',
+            ];
+
+            $hash = sprintf(
+                '%u',
+                crc32($bankKey)
+            );
+
+            $index = (int) ($hash % count($palette));
+
+            return $palette[$index];
+        };
+
+        // ==========================================
+        // 8. PROSES SETIAP GROUP
+        // ==========================================
+        foreach ($groups as $index => $group) {
+
+            // ======================================
+            // TENTUKAN QUERY BANK DAN NAMA SHEET
+            // ======================================
+            if ($kategori === 'Reguler') {
+
+                // Ambil nama bank berdasarkan rekening
+                $bankData = DB::table('bank')
+                    ->where('cabang', $cabang)
+                    ->where('site', 'REG')
+                    ->where('no_rek', $group)
+                    ->select('bank', 'no_rek', 'site')
+                    ->first();
+
+                if (!$bankData) {
+                    continue;
+                }
+
+                $bankName = $bankData->bank ?? 'BANK';
+
+                // Format BANK-NO_REK
+                $sheetName = $bankName . '-' . $group;
+
+                // Warna berdasarkan nama bank
+                $tabColor = $getBankTabColor($bankName);
+
+            } else {
+
+                // Franchise:
+                // Nama sheet berdasarkan jns_bank
+                $sheetName = $group;
+
+                // Warna berdasarkan jns_bank
+                $tabColor = $getBankTabColor($group);
+            }
+
+            // ======================================
+            // 9. QUERY DATA DETAIL
+            // ======================================
+            $query = DB::table($detailTable . ' as md')
+                ->join('bank as b', function ($join) use ($cabang) {
+                    $join->on('b.no_rek', '=', 'md.no_rek')
+                        ->where('b.cabang', '=', $cabang);
+                })
+                ->whereBetween(
+                    'md.' . $dateColumn,
+                    [$start, $end]
+                );
+
+            if ($kategori === 'Reguler') {
+
+                // REGULER:
+                // Satu rekening per sheet
+                $query->where('b.site', 'REG')
+                    ->where('md.no_rek', $group);
+
+            } else {
+
+                // FRANCHISE:
+                // Satu jns_bank per sheet
+                // Site selain REG
+                $query->where('b.site', '<>', 'REG')
+                    ->where('b.jns_bank', $group);
+            }
+
+            // ======================================
+            // 10. SELECT KOLOM
+            // ======================================
+            if ($kategori === 'Reguler') {
+
+                // Struktur REGULER
+                $query->select([
+                    'md.id',
+                    'b.cabang as cabang',
+                    'md.no_rek',
+                    'md.tgl',
+                    'md.remark',
+                    'md.remark1',
+                    'md.db',
+                    'md.cr',
+                ]);
+
+                $headers = [
+                    'CABANG',
+                    'NO REK',
+                    'TGL',
+                    'KETERANGAN',
+                    'KETERANGAN',
+                    'DEBET',
+                    'KREDIT',
+                ];
+
+                $dateColumnIndex = 2;
+
+            } else {
+
+                // Struktur FRANCHISE
+                // SITE diambil dari tabel bank
+                $query->select([
+                    'md.id',
+                    'b.cabang as cabang',
+                    'md.no_rek',
+                    'b.site as site',
+                    'md.tgl',
+                    'md.remark',
+                    'md.remark1',
+                    'md.db',
+                    'md.cr',
+                ]);
+
+                $headers = [
+                    'CABANG',
+                    'NO REK',
+                    'SITE',
+                    'TGL',
+                    'KETERANGAN',
+                    'KETERANGAN',
+                    'DEBET',
+                    'KREDIT',
+                ];
+
+                $dateColumnIndex = 3;
+            }
+
+            $query->orderBy('md.id');
+
+            // ======================================
+            // 11. PASTIKAN DATA TERSEDIA
+            // ======================================
+            $firstRecord = (clone $query)->first();
+
+            if (!$firstRecord) {
+                continue;
+            }
+
+            // ======================================
+            // 12. BUAT SHEET
+            // ======================================
+            if (!$sheetCreated) {
+
+                $sheet = $spreadsheet->getActiveSheet();
+
+                $sheetCreated = true;
+
+            } else {
+
+                $sheet = $spreadsheet->createSheet();
+            }
+
+            $sheet->setTitle(
+                $makeSheetName($sheetName)
+            );
+
+            // ======================================
+            // 13. WARNA TAB SHEET
+            // ======================================
+            $sheet->getTabColor()->setRGB($tabColor);
+
+            // ======================================
+            // 14. TULIS HEADER
+            // ======================================
+            foreach ($headers as $colIndex => $header) {
+
+                $cell = Coordinate::stringFromColumnIndex(
+                    $colIndex + 1
+                ) . '1';
+
+                $sheet->setCellValue($cell, $header);
+            }
+
+            $lastColumn = Coordinate::stringFromColumnIndex(
+                count($headers)
+            );
+
+            // Format header
+            $sheet->getStyle("A1:{$lastColumn}1")
+                ->applyFromArray([
+                    'font' => [
+                        'bold' => true,
+                        'color' => [
+                            'rgb' => 'FFFFFF'
+                        ],
+                        'size' => 11,
+                    ],
+                    'fill' => [
+                        'fillType' => Fill::FILL_SOLID,
+                        'startColor' => [
+                            'rgb' => $kategori === 'Reguler'
+                                ? '2563EB'
+                                : '7C3AED',
+                        ],
+                    ],
+                    'alignment' => [
+                        'horizontal' => 'center',
+                        'vertical' => 'center',
+                    ],
+                ]);
+
+            $sheet->getRowDimension(1)->setRowHeight(25);
+
+            // Freeze header
+            $sheet->freezePane('A2');
+
+            // ======================================
+            // 15. TULIS DATA BERTAHAP
+            // ======================================
+            $rowNumber = 2;
+
+            $query->chunkById(
+                1000,
+                function ($records) use (
+                    $sheet,
+                    $kategori,
+                    $dateColumnIndex,
+                    &$rowNumber
+                ) {
+
+                    foreach ($records as $record) {
+
+                        // ==================================
+                        // CABANG
+                        // ==================================
+                        $sheet->setCellValueExplicit(
+                            'A' . $rowNumber,
+                            (string) $record->cabang,
+                            DataType::TYPE_STRING
+                        );
+
+                        // ==================================
+                        // NO REK
+                        // ==================================
+                        $sheet->setCellValueExplicit(
+                            'B' . $rowNumber,
+                            (string) $record->no_rek,
+                            DataType::TYPE_STRING
+                        );
+
+                        if ($kategori === 'Reguler') {
+
+                            // ==================================
+                            // REGULER
+                            // ==================================
+
+                            // TGL
+                            $dateColumn = 'C';
+
+                            if ($record->tgl !== null) {
+
+                                $date = \PhpOffice\PhpSpreadsheet\Shared\Date::PHPToExcel(
+                                    new \DateTime($record->tgl)
+                                );
+
+                                $sheet->setCellValue(
+                                    $dateColumn . $rowNumber,
+                                    $date
+                                );
+                            }
+
+                            // REMARK
+                            $sheet->setCellValueExplicit(
+                                'D' . $rowNumber,
+                                (string) ($record->remark ?? ''),
+                                DataType::TYPE_STRING
+                            );
+
+                            // REMARK1
+                            $sheet->setCellValueExplicit(
+                                'E' . $rowNumber,
+                                (string) ($record->remark1 ?? ''),
+                                DataType::TYPE_STRING
+                            );
+
+                            // DB
+                            $sheet->setCellValue(
+                                'F' . $rowNumber,
+                                $record->db !== null
+                                    ? (float) $record->db
+                                    : null
+                            );
+
+                            // CR
+                            $sheet->setCellValue(
+                                'G' . $rowNumber,
+                                $record->cr !== null
+                                    ? (float) $record->cr
+                                    : null
+                            );
+
+                        } else {
+
+                            // ==================================
+                            // FRANCHISE
+                            // ==================================
+
+                            // SITE dari tabel bank
+                            $sheet->setCellValueExplicit(
+                                'C' . $rowNumber,
+                                (string) $record->site,
+                                DataType::TYPE_STRING
+                            );
+
+                            // TGL
+                            if ($record->tgl !== null) {
+
+                                $date = \PhpOffice\PhpSpreadsheet\Shared\Date::PHPToExcel(
+                                    new \DateTime($record->tgl)
+                                );
+
+                                $sheet->setCellValue(
+                                    'D' . $rowNumber,
+                                    $date
+                                );
+                            }
+
+                            // REMARK
+                            $sheet->setCellValueExplicit(
+                                'E' . $rowNumber,
+                                (string) ($record->remark ?? ''),
+                                DataType::TYPE_STRING
+                            );
+
+                            // REMARK1
+                            $sheet->setCellValueExplicit(
+                                'F' . $rowNumber,
+                                (string) ($record->remark1 ?? ''),
+                                DataType::TYPE_STRING
+                            );
+
+                            // DB
+                            $sheet->setCellValue(
+                                'G' . $rowNumber,
+                                $record->db !== null
+                                    ? (float) $record->db
+                                    : null
+                            );
+
+                            // CR
+                            $sheet->setCellValue(
+                                'H' . $rowNumber,
+                                $record->cr !== null
+                                    ? (float) $record->cr
+                                    : null
+                            );
+                        }
+
+                        $rowNumber++;
+                    }
+                },
+                'md.id',
+                'id'
+            );
+
+            // ======================================
+            // 16. FORMAT KOLOM
+            // ======================================
+            $lastRow = max(1, $rowNumber - 1);
+
+            if ($kategori === 'Reguler') {
+
+                // Lebar kolom REGULER
+                $widths = [
+                    'A' => 20,
+                    'B' => 22,
+                    'C' => 15,
+                    'D' => 40,
+                    'E' => 40,
+                    'F' => 18,
+                    'G' => 18,
+                ];
+
+            } else {
+
+                // Lebar kolom FRANCHISE
+                $widths = [
+                    'A' => 20,
+                    'B' => 22,
+                    'C' => 15,
+                    'D' => 15,
+                    'E' => 40,
+                    'F' => 40,
+                    'G' => 18,
+                    'H' => 18,
+                ];
+            }
+
+            foreach ($widths as $column => $width) {
+                $sheet->getColumnDimension($column)
+                    ->setWidth($width);
+            }
+
+            // ======================================
+            // 17. FORMAT TANGGAL
+            // ======================================
+            $dateLetter = Coordinate::stringFromColumnIndex(
+                $dateColumnIndex + 1
+            );
+
+            if ($lastRow >= 2) {
+
+                $sheet->getStyle(
+                    "{$dateLetter}2:{$dateLetter}{$lastRow}"
+                )
+                    ->getNumberFormat()
+                    ->setFormatCode('dd-mmm-yy');
+
+                $sheet->getStyle(
+                    "{$dateLetter}2:{$dateLetter}{$lastRow}"
+                )
+                    ->getAlignment()
+                    ->setHorizontal('center');
+            }
+
+            // ======================================
+            // 18. FORMAT NOMINAL
+            // ======================================
+            $nominalStart = $kategori === 'Reguler' ? 'F' : 'G';
+            $nominalEnd   = $kategori === 'Reguler' ? 'G' : 'H';
+
+            if ($lastRow >= 2) {
+
+                $sheet->getStyle(
+                    "{$nominalStart}2:{$nominalEnd}{$lastRow}"
+                )
+                    ->getNumberFormat()
+                    ->setFormatCode('#,##0.00;[Red]-#,##0.00');
+
+                $sheet->getStyle(
+                    "{$nominalStart}2:{$nominalEnd}{$lastRow}"
+                )
+                    ->getAlignment()
+                    ->setHorizontal('right');
+            }
+
+            // ======================================
+            // 19. BORDER SELURUH CELL
+            // ======================================
+            $sheet->getStyle("A1:{$lastColumn}{$lastRow}")
+                ->applyFromArray([
+                    'borders' => [
+                        'allBorders' => [
+                            'borderStyle' => Border::BORDER_THIN,
+                            'color' => [
+                                'rgb' => '808080'
+                            ],
+                        ],
+                    ],
+                    'alignment' => [
+                        'vertical' => 'center',
+                    ],
+                ]);
+
+            // ======================================
+            // 20. AUTO FILTER
+            // ======================================
+            $sheet->setAutoFilter(
+                "A1:{$lastColumn}{$lastRow}"
+            );
+        }
+
+        // ==========================================
+        // 21. PERIKSA DATA
+        // ==========================================
+        if (!$sheetCreated) {
+
+            $spreadsheet->disconnectWorksheets();
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak ditemukan transaksi mutasi pada periode tersebut.'
+            ], 404);
+        }
+
+        // ==========================================
+        // 22. NAMA FILE
+        // ==========================================
+        $filename = 'Mutasi_' .
+            $kategori . '_' .
+            $cabang . '_' .
+            $periode . '.xlsx';
+
+        // ==========================================
+        // 23. DOWNLOAD EXCEL
+        // ==========================================
+        return response()->streamDownload(
+            function () use ($spreadsheet) {
+
+                $writer = new Xlsx($spreadsheet);
+
+                $writer->save('php://output');
+
+                $spreadsheet->disconnectWorksheets();
+            },
+            $filename,
+            [
+                'Content-Type' =>
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ]
+        );
+    }
+
+
 }

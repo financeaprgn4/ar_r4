@@ -6,6 +6,7 @@ import {
   EyeSlashIcon,
   ArrowRightOnRectangleIcon
 } from "@heroicons/react/24/outline";
+import { useCabang } from "../contexts/CabangContext";
 
 const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
@@ -13,6 +14,8 @@ const Login = () => {
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const { setUserContext } = useCabang();
 
   useEffect(() => {
     if (usernameRef.current) {
@@ -23,8 +26,14 @@ const Login = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
 
+    if (loading) return;
+
+    setLoading(true);
+
+    const start = performance.now();
+
     try {
-      const response = await fetch(`/api/login`, {
+      const response = await fetch("/api/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -33,24 +42,40 @@ const Login = () => {
         body: JSON.stringify({ username, password })
       });
 
-      const text = await response.text(); // ⬅️ PENTING
+      const text = await response.text();
+
       let data = {};
 
       try {
         data = text ? JSON.parse(text) : {};
-      } catch (err) {
+      } catch {
         throw new Error("Response server bukan JSON");
       }
+
+      const duration = performance.now() - start;
+
+      console.log(
+        `Login request: ${duration.toFixed(2)} ms`
+      );
 
       if (!response.ok) {
         throw new Error(data.message || "Login gagal");
       }
 
-      sessionStorage.setItem("username", data.user.username);
-      sessionStorage.setItem("nama", data.user.nama);
-      sessionStorage.setItem("level_user", data.user.level_user);
-      sessionStorage.setItem("cabang", data.user.cabang);
-      sessionStorage.setItem("foto", data.user.foto ?? "");
+      // Pastikan role tersedia dari backend
+      if (!data.user || !data.user.role) {
+        throw new Error("Role pengguna tidak ditemukan");
+      }
+
+      // Simpan informasi pengguna melalui CabangContext
+      setUserContext(data.user);
+
+      // Tetap simpan level_user untuk kompatibilitas
+      // dengan komponen lama
+      sessionStorage.setItem(
+        "level_user",
+        data.user.level_user || ""
+      );
 
       await Swal.fire({
         icon: "success",
@@ -62,11 +87,14 @@ const Login = () => {
       navigate("/dashboard");
 
     } catch (error) {
-      Swal.fire({
+      await Swal.fire({
         icon: "error",
         title: "Login Gagal",
         text: error.message || "Terjadi kesalahan jaringan",
       });
+
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -133,10 +161,26 @@ const Login = () => {
 
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition flex items-center justify-center space-x-2"
+            disabled={loading}
+            className={`w-full text-white py-2 rounded transition
+              flex items-center justify-center space-x-2
+              ${
+                loading
+                  ? "bg-gray-400 cursor-not-allowed"
+                  : "bg-blue-600 hover:bg-blue-700"
+              }`}
           >
-            <ArrowRightOnRectangleIcon className="h-5 w-5" />
-            <span>Login</span>
+            {loading ? (
+              <>
+                <span className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></span>
+                <span>Memproses Login...</span>
+              </>
+            ) : (
+              <>
+                <ArrowRightOnRectangleIcon className="h-5 w-5" />
+                <span>Login</span>
+              </>
+            )}
           </button>
         </form>
       </div>
